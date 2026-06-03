@@ -1,0 +1,15 @@
+{
+  "account": {
+    "account_id": "mock-account-1",
+    "email": "mock@example.com",
+    "display_name": "Mock Operator"
+  },
+  "start_page_token": "unused-token",
+  "file_pages": {},
+  "change_pages": {},
+  "failure_modes": {
+    "list_changes_errors": {
+      "start-token-2": "simulated transport interruption while applying change page `start-token-2`"
+    }
+  }
+}

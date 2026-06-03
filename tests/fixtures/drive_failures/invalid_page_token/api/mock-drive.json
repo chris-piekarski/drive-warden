@@ -1,0 +1,27 @@
+{
+  "account": {
+    "account_id": "mock-account-1",
+    "email": "mock@example.com",
+    "display_name": "Mock Operator"
+  },
+  "start_page_token": "unused-token",
+  "file_pages": {
+    "__start__": {
+      "next_page_token": null,
+      "files": []
+    }
+  },
+  "change_pages": {
+    "unused-token": {
+      "next_page_token": null,
+      "new_start_page_token": "unused-token",
+      "removed_file_ids": [],
+      "updated_files": []
+    }
+  },
+  "failure_modes": {
+    "list_changes_errors": {
+      "start-token-2": "changes.list returned 410 Gone for page token `start-token-2`; invalid page token detected"
+    }
+  }
+}

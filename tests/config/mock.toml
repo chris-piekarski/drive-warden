@@ -1,0 +1,6 @@
+[backend]
+kind = "mock"
+fixture_dir = "tests/fixtures/drive_small"
+
+[account]
+default_google_account = "mock@example.com"

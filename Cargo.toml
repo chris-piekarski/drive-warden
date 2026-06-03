@@ -1,0 +1,38 @@
+[workspace]
+members = [
+    "crates/gdrive-optimize",
+    "crates/gdrive-core",
+    "crates/gdrive-drive",
+    "crates/gdrive-db",
+    "crates/gdrive-report",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.0.1"
+license = "TBD"
+rust-version = "1.96"
+
+[workspace.dependencies]
+anyhow = "1"
+anstream = "0.6"
+anstyle = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4"
+comfy-table = "7"
+console = "0.15"
+indicatif = "0.17"
+mockall = "0.13"
+refinery = { version = "0.8", features = ["rusqlite"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+toml = "0.8"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

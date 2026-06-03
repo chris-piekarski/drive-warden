@@ -1,0 +1,43 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# IDE / editor
+.idea/
+.vscode/
+.claude/settings.local.json
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Application runtime data (local cache, credentials, reports)
+/data/
+*.db
+*.db-shm
+*.db-wal
+/reports/
+
+# OAuth / secrets — never commit
+credentials.json
+client_secret*.json
+token.json
+.env
+.env.*
+
+# Coverage & test artifacts
+/dist/
+/coverage/
+lcov.info
+tarpaulin-report.html
+*.profraw
+
+# Documentation build output
+/book/
+/docs/api/
+
+# Logs
+*.log

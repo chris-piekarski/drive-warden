@@ -1,0 +1,273 @@
+{
+  "account": {
+    "account_id": "mock-account-1",
+    "email": "mock@example.com",
+    "display_name": "Mock Operator"
+  },
+  "start_page_token": "start-token-1",
+  "file_pages": {
+    "__start__": {
+      "next_page_token": "bootstrap-page-2",
+      "files": [
+        {
+          "id": "root-folder",
+          "name": "Docs",
+          "mime_type": "application/vnd.google-apps.folder",
+          "parents": ["root"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true
+        },
+        {
+          "id": "old-report",
+          "name": "Report.txt",
+          "mime_type": "text/plain",
+          "parents": ["root-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true,
+          "size": 300,
+          "modified_time": "2024-01-01T00:00:00Z",
+          "viewed_by_me_time": "2024-01-03T00:00:00Z"
+        },
+        {
+          "id": "duplicate-a",
+          "name": "Archive.zip",
+          "mime_type": "application/zip",
+          "parents": ["root-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true,
+          "size": 10485760,
+          "md5_checksum": "md5-archive-group",
+          "modified_time": "2021-04-01T00:00:00Z",
+          "viewed_by_me_time": "2021-05-01T00:00:00Z",
+          "web_view_link": "https://example.test/file/duplicate-a"
+        },
+        {
+          "id": "public-file",
+          "name": "PublicDeck.pdf",
+          "mime_type": "application/pdf",
+          "parents": ["root-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": true,
+          "operator_can_share_manage": true,
+          "size": 4096,
+          "modified_time": "2024-03-01T00:00:00Z",
+          "viewed_by_me_time": "2024-03-04T00:00:00Z",
+          "permissions": [
+            {
+              "id": "perm-anyone",
+              "permission_type": "anyone",
+              "role": "reader",
+              "allow_file_discovery": false,
+              "inherited": false,
+              "actionable": true
+            }
+          ],
+          "web_view_link": "https://example.test/file/public-file"
+        }
+      ]
+    },
+    "bootstrap-page-2": {
+      "next_page_token": null,
+      "files": [
+        {
+          "id": "orphan-file",
+          "name": "Loose.txt",
+          "mime_type": "text/plain",
+          "parents": ["missing-parent"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true,
+          "size": 64,
+          "modified_time": "2025-01-15T00:00:00Z"
+        },
+        {
+          "id": "heuristic-a",
+          "name": "Notes.txt",
+          "mime_type": "text/plain",
+          "parents": ["root-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true,
+          "size": 512,
+          "modified_time": "2022-06-01T00:00:00Z",
+          "viewed_by_me_time": "2022-06-10T00:00:00Z"
+        },
+        {
+          "id": "inherited-file",
+          "name": "InheritedSpec.docx",
+          "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "parents": ["root-folder"],
+          "trashed": false,
+          "owned_by_me": false,
+          "shared": true,
+          "operator_can_share_manage": false,
+          "size": 2048,
+          "modified_time": "2023-08-01T00:00:00Z",
+          "permissions": [
+            {
+              "id": "perm-inherited",
+              "permission_type": "user",
+              "role": "reader",
+              "email_address": "partner@outside.test",
+              "inherited": true,
+              "actionable": false
+            }
+          ],
+          "web_view_link": "https://example.test/file/inherited-file"
+        },
+        {
+          "id": "photo-file",
+          "name": "Sunset.jpg",
+          "mime_type": "image/jpeg",
+          "parents": ["root-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true,
+          "size": 7340032,
+          "modified_time": "2024-04-01T12:00:00Z",
+          "viewed_by_me_time": "2024-04-02T09:30:00Z",
+          "web_view_link": "https://example.test/file/photo-file",
+          "image_media_metadata": {
+            "width": 4032,
+            "height": 3024,
+            "camera_make": "ExampleCam",
+            "camera_model": "Model One",
+            "date_taken": "2024-04-01T11:45:00Z",
+            "exposure_time": "1/125",
+            "aperture": "f/2.8",
+            "focal_length": "50mm",
+            "iso_speed": 200
+          }
+        }
+      ]
+    }
+  },
+  "change_pages": {
+    "start-token-1": {
+      "next_page_token": null,
+      "new_start_page_token": "start-token-2",
+      "removed_file_ids": ["old-report"],
+      "updated_files": [
+        {
+          "id": "duplicate-b",
+          "name": "Archive Copy.zip",
+          "mime_type": "application/zip",
+          "parents": ["root-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true,
+          "size": 10485760,
+          "md5_checksum": "md5-archive-group",
+          "modified_time": "2021-04-02T00:00:00Z",
+          "viewed_by_me_time": "2021-05-02T00:00:00Z",
+          "web_view_link": "https://example.test/file/duplicate-b"
+        },
+        {
+          "id": "heuristic-b",
+          "name": "Notes.txt",
+          "mime_type": "text/plain",
+          "parents": ["root-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true,
+          "size": 512,
+          "modified_time": "2022-06-11T00:00:00Z",
+          "viewed_by_me_time": "2022-06-12T00:00:00Z"
+        },
+        {
+          "id": "domain-file",
+          "name": "TeamPlan.docx",
+          "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "parents": ["root-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": true,
+          "operator_can_share_manage": true,
+          "size": 1536,
+          "modified_time": "2024-02-15T00:00:00Z",
+          "permissions": [
+            {
+              "id": "perm-domain",
+              "permission_type": "domain",
+              "role": "reader",
+              "domain": "example.com",
+              "inherited": false,
+              "actionable": true
+            }
+          ],
+          "web_view_link": "https://example.test/file/domain-file"
+        },
+        {
+          "id": "external-file",
+          "name": "VendorQuote.pdf",
+          "mime_type": "application/pdf",
+          "parents": ["root-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": true,
+          "operator_can_share_manage": true,
+          "size": 20480,
+          "modified_time": "2024-05-01T00:00:00Z",
+          "permissions": [
+            {
+              "id": "perm-external",
+              "permission_type": "user",
+              "role": "reader",
+              "email_address": "vendor@outside.test",
+              "inherited": false,
+              "actionable": true
+            }
+          ],
+          "web_view_link": "https://example.test/file/external-file"
+        },
+        {
+          "id": "shared-shortcut",
+          "name": "Shortcut.note",
+          "mime_type": "application/octet-stream",
+          "parents": ["root-folder", "root"],
+          "trashed": false,
+          "owned_by_me": false,
+          "shared": true,
+          "operator_can_share_manage": true,
+          "size": 128,
+          "modified_time": "2025-01-01T00:00:00Z",
+          "permissions": [
+            {
+              "id": "perm-internal",
+              "permission_type": "user",
+              "role": "reader",
+              "email_address": "teammate@example.com",
+              "inherited": false,
+              "actionable": true
+            }
+          ],
+          "web_view_link": "https://example.test/file/shared-shortcut"
+        }
+      ]
+    },
+    "start-token-2": {
+      "next_page_token": null,
+      "new_start_page_token": "start-token-3",
+      "removed_file_ids": [],
+      "updated_files": []
+    },
+    "start-token-3": {
+      "next_page_token": null,
+      "new_start_page_token": "start-token-4",
+      "removed_file_ids": [],
+      "updated_files": []
+    }
+  }
+}

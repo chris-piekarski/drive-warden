@@ -1,0 +1,13 @@
+{
+  "account": {
+    "account_id": "mock-account-1",
+    "email": "mock@example.com",
+    "display_name": "Mock Operator"
+  },
+  "start_page_token": "unused-token",
+  "file_pages": {},
+  "change_pages": {},
+  "failure_modes": {
+    "auth_status_error": "refresh token revoked or expired; run `gdrive-optimize auth login` again"
+  }
+}

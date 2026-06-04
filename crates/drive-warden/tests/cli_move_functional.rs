@@ -35,6 +35,7 @@ fn move_preview_and_invalid_destination_are_read_only() {
     );
     assert!(!invalid.status.success());
     assert!(support::stderr(&invalid).contains("destination folder path `/Missing` was not found"));
+    assert!(support::stderr(&invalid).contains("--provision-missing"));
 }
 
 #[test]
@@ -164,4 +165,82 @@ fn move_apply_reparents_folder_without_reparenting_children() {
     let items = repository.load_inventory_items().expect("inventory");
     let child_item = items.iter().find(|item| item.file.id == "nested-file").expect("child item");
     assert_eq!(child_item.path.primary_path, "/Archive/Project/Plan.txt");
+}
+
+#[test]
+fn move_preview_supports_root_and_provisioning() {
+    let temp_dir = tempfile::TempDir::new().expect("tempdir");
+    let login = support::run_mock_command_with_fixture(
+        &temp_dir,
+        "tests/fixtures/drive_move",
+        &["auth", "login"],
+    );
+    assert!(login.status.success(), "stderr: {}", support::stderr(&login));
+    let sync =
+        support::run_mock_command_with_fixture(&temp_dir, "tests/fixtures/drive_move", &["sync"]);
+    assert!(sync.status.success(), "stderr: {}", support::stderr(&sync));
+
+    let root_preview = support::run_mock_command_with_fixture(
+        &temp_dir,
+        "tests/fixtures/drive_move",
+        &["move", "--file-id", "loose-file", "--to-root"],
+    );
+    assert!(root_preview.status.success(), "stderr: {}", support::stderr(&root_preview));
+    assert!(support::stdout(&root_preview).contains("destination=/"));
+
+    let provision_preview = support::run_mock_command_with_fixture(
+        &temp_dir,
+        "tests/fixtures/drive_move",
+        &[
+            "move",
+            "--file-id",
+            "loose-file",
+            "--to-path",
+            "/Archive/NewShelf",
+            "--provision-missing",
+        ],
+    );
+    assert!(provision_preview.status.success(), "stderr: {}", support::stderr(&provision_preview));
+    let stdout = support::stdout(&provision_preview);
+    assert!(stdout.contains("destination provisioning:"));
+    assert!(stdout.contains("/Archive/NewShelf"));
+}
+
+#[test]
+fn move_apply_provisions_destination_and_records_folder_history() {
+    let temp_dir = tempfile::TempDir::new().expect("tempdir");
+    let login = support::run_mock_command_with_fixture(
+        &temp_dir,
+        "tests/fixtures/drive_move",
+        &["auth", "login"],
+    );
+    assert!(login.status.success(), "stderr: {}", support::stderr(&login));
+    let sync =
+        support::run_mock_command_with_fixture(&temp_dir, "tests/fixtures/drive_move", &["sync"]);
+    assert!(sync.status.success(), "stderr: {}", support::stderr(&sync));
+
+    let apply = support::run_mock_command_with_fixture(
+        &temp_dir,
+        "tests/fixtures/drive_move",
+        &[
+            "move",
+            "--file-id",
+            "loose-file",
+            "--to-path",
+            "/Archive/NewShelf",
+            "--provision-missing",
+            "--apply",
+            "--yes",
+        ],
+    );
+    assert!(apply.status.success(), "stderr: {}", support::stderr(&apply));
+    assert!(support::stdout(&apply).contains("destination provisioning: created=1"));
+
+    let repository =
+        SqliteInventoryRepository::new(support::temp_db_path(&temp_dir)).expect("repo");
+    let created = repository.load_created_folders().expect("created folders");
+    assert_eq!(created.len(), 2);
+    assert_eq!(created[0].status, "pending");
+    assert_eq!(created[1].status, "applied");
+    assert_eq!(created[1].provision_path, "/Archive/NewShelf");
 }

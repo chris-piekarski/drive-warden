@@ -12,6 +12,7 @@ struct TestRepository {
     revoked_shares: Arc<Mutex<Vec<RevokedShareEntry>>>,
     trashed_files: Arc<Mutex<Vec<TrashedFileEntry>>>,
     moved_files: Arc<Mutex<Vec<MovedFileEntry>>>,
+    created_folders: Arc<Mutex<Vec<CreatedFolderEntry>>>,
 }
 
 impl InventoryRepository for TestRepository {
@@ -65,6 +66,15 @@ impl InventoryRepository for TestRepository {
 
     fn load_moved_files(&self) -> CoreResult<Vec<MovedFileEntry>> {
         Ok(self.moved_files.lock().expect("moved").clone())
+    }
+
+    fn append_created_folder(&self, entry: &CreatedFolderEntry) -> CoreResult<()> {
+        self.created_folders.lock().expect("created").push(entry.clone());
+        Ok(())
+    }
+
+    fn load_created_folders(&self) -> CoreResult<Vec<CreatedFolderEntry>> {
+        Ok(self.created_folders.lock().expect("created").clone())
     }
 
     fn begin_sync_run(
@@ -127,6 +137,7 @@ struct TestGateway {
     deleted_permissions: Arc<Mutex<Vec<(String, String)>>>,
     trashed_files: Arc<Mutex<Vec<String>>>,
     moved_files: Arc<Mutex<Vec<MovedFileCall>>>,
+    created_folders: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 #[async_trait]
@@ -191,6 +202,10 @@ impl DriveGateway for TestGateway {
     }
 
     async fn create_folder(&self, parent_id: &str, name: &str) -> CoreResult<FileRecord> {
+        self.created_folders
+            .lock()
+            .expect("created folders")
+            .push((parent_id.to_string(), name.to_string()));
         Ok(FileRecord {
             id: format!("created-folder-{name}"),
             name: name.to_string(),
@@ -230,6 +245,14 @@ impl DriveGateway for TestGateway {
     async fn trash_file(&self, file_id: &str) -> CoreResult<()> {
         self.trashed_files.lock().expect("trashed files").push(file_id.to_string());
         Ok(())
+    }
+
+    async fn find_file_in_folder(
+        &self,
+        _parent_id: &str,
+        _name: &str,
+    ) -> CoreResult<Option<RemoteFileMetadata>> {
+        Ok(None)
     }
 
     async fn move_file(
@@ -1014,13 +1037,14 @@ fn move_plan_and_apply_record_pending_and_applied_history() {
     .expect("current parent plan");
     assert_eq!(current_parent.rows[0].reason, MoveReasonCode::DestinationIsCurrentParent);
 
-    let missing_parent = move_plan(
+    let rootless = move_plan(
         &repository,
         &InventoryQuery { file_id: Some("rootless".into()), ..InventoryQuery::default() },
         "archive",
     )
-    .expect("missing parent plan");
-    assert_eq!(missing_parent.rows[0].reason, MoveReasonCode::MissingParents);
+    .expect("rootless plan");
+    assert_eq!(rootless.rows[0].reason, MoveReasonCode::Actionable);
+    assert_eq!(rootless.rows[0].from_parent_ids, ["root"]);
 
     let into_descendant = move_plan(
         &repository,
@@ -1458,4 +1482,103 @@ fn sync_inventory_falls_back_to_full_when_delta_token_expires() {
     assert_eq!(summary.mode, SyncMode::Full);
     assert_eq!(summary.committed_page_token, "fresh-token");
     assert_eq!(summary.file_count, 1);
+}
+
+#[test]
+fn move_plan_supports_root_destination_and_provisioning_preview() {
+    let repository = TestRepository::default();
+    *repository.state.lock().expect("state") = Some(sample_state());
+    *repository.snapshot.lock().expect("snapshot") = FullSnapshot {
+        files: vec![
+            FileRecord {
+                id: "docs".into(),
+                name: "Docs".into(),
+                mime_type: GOOGLE_DRIVE_FOLDER_MIME.into(),
+                parents: vec!["root".into()],
+                owned_by_me: true,
+                operator_can_share_manage: true,
+                ..FileRecord::default()
+            },
+            FileRecord {
+                id: "report".into(),
+                name: "Report.txt".into(),
+                mime_type: "text/plain".into(),
+                parents: vec!["docs".into()],
+                owned_by_me: true,
+                operator_can_share_manage: true,
+                ..FileRecord::default()
+            },
+        ],
+    };
+
+    let to_root = move_orchestration_plan(
+        &repository,
+        &InventoryQuery { file_id: Some("report".into()), ..InventoryQuery::default() },
+        MoveDestinationTarget::Root,
+        &MoveOptions::default(),
+    )
+    .expect("root plan");
+    assert_eq!(to_root.move_plan.actionable_count, 1);
+    assert_eq!(to_root.move_plan.rows[0].to_parent_id, MY_DRIVE_ROOT_ID);
+
+    let provision = move_orchestration_plan(
+        &repository,
+        &InventoryQuery { file_id: Some("report".into()), ..InventoryQuery::default() },
+        MoveDestinationTarget::Path("/Archive/New".into()),
+        &MoveOptions { provision_missing: true },
+    )
+    .expect("provision plan");
+    let provisioning = provision.provisioning.expect("provisioning");
+    assert_eq!(provisioning.create_count, 2);
+    assert_eq!(provisioning.destination_path, "/Archive/New");
+}
+
+#[test]
+fn apply_move_orchestration_provisions_destination_and_records_history() {
+    let repository = TestRepository::default();
+    *repository.state.lock().expect("state") = Some(sample_state());
+    *repository.snapshot.lock().expect("snapshot") = FullSnapshot {
+        files: vec![
+            FileRecord {
+                id: "archive".into(),
+                name: "Archive".into(),
+                mime_type: GOOGLE_DRIVE_FOLDER_MIME.into(),
+                parents: vec!["root".into()],
+                owned_by_me: true,
+                operator_can_share_manage: true,
+                ..FileRecord::default()
+            },
+            FileRecord {
+                id: "report".into(),
+                name: "Report.txt".into(),
+                mime_type: "text/plain".into(),
+                parents: vec!["archive".into()],
+                owned_by_me: true,
+                operator_can_share_manage: true,
+                ..FileRecord::default()
+            },
+        ],
+    };
+    let gateway = TestGateway::default();
+    let summary = tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(apply_move_orchestration(
+            &gateway,
+            &repository,
+            &InventoryQuery { file_id: Some("report".into()), ..InventoryQuery::default() },
+            MoveDestinationTarget::Path("/Archive/New".into()),
+            &MoveOptions { provision_missing: true },
+            "move",
+        ))
+        .expect("apply orchestrated move");
+    assert_eq!(summary.provisioning_created, 1);
+    assert_eq!(summary.move_summary.applied, 1);
+    assert_eq!(
+        gateway.created_folders.lock().expect("created").as_slice(),
+        [("archive".into(), "New".into())]
+    );
+    let folder_history = repository.load_created_folders().expect("folder history");
+    assert_eq!(folder_history.len(), 2);
+    assert_eq!(folder_history[0].status, "pending");
+    assert_eq!(folder_history[1].status, "applied");
 }

@@ -69,13 +69,15 @@ cargo run -p drive-warden -- trash-status --within-days 7
 cargo run -p drive-warden -- trash-history --only-pending
 cargo run -p drive-warden -- trash-restore --path-contains '[orphan]/Coors/Model'
 cargo run -p drive-warden -- move --path '[orphan]/eBooks/*' --to-path '/Archive/eBooks'
-cargo run -p drive-warden -- move --file-id <file-id> --to-folder-id <folder-id> --apply --yes
+cargo run -p drive-warden -- move --file-id <file-id> --to-root --apply --yes
+cargo run -p drive-warden -- move --path '/Docs/*' --to-path '/Archive/New' --provision-missing --apply --yes
+cargo run -p drive-warden -- move-history --only-pending
 cargo run -p drive-warden -- doctor
 ```
 
-`trash --apply`, `unshare --apply`, and `move --apply` first create a named remote DB release such as `before-trash-...` or `before-unshare-...`. If that release cannot be created, the live Drive mutation is refused. `trash --apply` moves files or explicitly recursive folders to Google Drive trash. It does not permanently delete files or empty trash; use the Google Drive UI if you need to restore items during Google's recovery window.
+`trash --apply`, `unshare --apply`, and `move --apply` first create a named remote DB release such as `before-trash-...`, `before-unshare-...`, or `before-move-...`. If that release cannot be created, the live Drive mutation is refused. `trash --apply` moves files or explicitly recursive folders to Google Drive trash. It does not permanently delete files or empty trash; use the Google Drive UI if you need to restore items during Google's recovery window.
 
-`move` requires the destination folder to already exist and be selected by exact synced path or folder ID. It records pending and applied rows in `moved_file_history`, then runs a full sync so paths reflect the new parent.
+`move` supports My Drive root (`--to-root`), existing destinations by exact synced path or folder ID, and `--provision-missing` to create missing destination folders during apply. It records pending and applied rows in `moved_file_history`, then runs a full sync so paths reflect the new parent.
 
 Every applied trash move is recorded in the append-only `trashed_file_history` table. Recursive folder trash records descendant snapshots too, so operators can still see file IDs, paths, trash time, and estimated recovery deadlines after sync removes those items from the active `files` inventory.
 

@@ -9,6 +9,8 @@ use thiserror::Error;
 pub const APP_NAME: &str = "drive-warden";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const GOOGLE_DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
+pub const MY_DRIVE_ROOT_ID: &str = "root";
+pub const MY_DRIVE_ROOT_PATH: &str = "/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DriveScope {
@@ -794,6 +796,8 @@ pub struct MovePlan {
     pub skipped_count: usize,
     pub file_count: usize,
     pub folder_count: usize,
+    #[serde(default)]
+    pub provisioning: Option<DestinationProvisioningPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -801,6 +805,55 @@ pub struct MoveApplySummary {
     pub planned: usize,
     pub applied: usize,
     pub skipped: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MoveOptions {
+    #[serde(default)]
+    pub provision_missing: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MoveDestinationTarget {
+    FolderId(String),
+    Path(String),
+    Root,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestinationProvisioningRow {
+    pub parent_id: String,
+    pub parent_path: String,
+    pub folder_name: String,
+    pub folder_path: String,
+    pub exists: bool,
+    #[serde(default)]
+    pub existing_folder_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestinationProvisioningPlan {
+    pub rows: Vec<DestinationProvisioningRow>,
+    #[serde(default)]
+    pub destination_folder_id: Option<String>,
+    pub destination_path: String,
+    pub create_count: usize,
+    #[serde(default)]
+    pub is_root: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MoveOrchestrationPlan {
+    #[serde(default)]
+    pub provisioning: Option<DestinationProvisioningPlan>,
+    #[serde(default)]
+    pub move_plan: MovePlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveOrchestrationApplySummary {
+    pub provisioning_created: usize,
+    pub move_summary: MoveApplySummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -896,6 +949,29 @@ pub struct MovedFileEntry {
     pub to_parent_id: String,
     pub to_path: String,
     pub move_via: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub moved_via_file_id: Option<String>,
+    #[serde(default)]
+    pub moved_via_path: Option<String>,
+    #[serde(default)]
+    pub explicitly_requested: bool,
+}
+
+/// Append-only snapshot of a destination folder created during move orchestration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedFolderEntry {
+    pub at: DateTime<Utc>,
+    pub command: String,
+    pub status: String,
+    pub folder_id: String,
+    pub folder_name: String,
+    pub folder_path: String,
+    pub parent_id: String,
+    pub parent_path: String,
+    pub provision_path: String,
+    pub create_via: String,
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -1041,6 +1117,13 @@ pub trait InventoryRepository: Send + Sync {
         Ok(())
     }
     fn load_moved_files(&self) -> CoreResult<Vec<MovedFileEntry>> {
+        Ok(Vec::new())
+    }
+    fn append_created_folder(&self, entry: &CreatedFolderEntry) -> CoreResult<()> {
+        let _ = entry;
+        Ok(())
+    }
+    fn load_created_folders(&self) -> CoreResult<Vec<CreatedFolderEntry>> {
         Ok(Vec::new())
     }
     fn begin_sync_run(
@@ -1323,14 +1406,506 @@ where
     })
 }
 
+pub fn parse_destination_path(path: &str) -> CoreResult<Vec<String>> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == MY_DRIVE_ROOT_PATH {
+        return Ok(Vec::new());
+    }
+    let normalized = trimmed.trim_start_matches('/');
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+    let segments = normalized
+        .split('/')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if segments.len() != normalized.split('/').filter(|segment| !segment.is_empty()).count() {
+        return Err(CoreError::Message(format!(
+            "destination path `{path}` contains empty path segments"
+        )));
+    }
+    Ok(segments)
+}
+
+fn effective_parent_ids(file: &FileRecord) -> Vec<String> {
+    if file.parents.is_empty() {
+        vec![MY_DRIVE_ROOT_ID.to_string()]
+    } else {
+        file.parents.clone()
+    }
+}
+
+fn folder_has_parent(item: &InventoryItem, parent_id: &str) -> bool {
+    if parent_id == MY_DRIVE_ROOT_ID {
+        item.file.parents.iter().any(|parent| parent == MY_DRIVE_ROOT_ID)
+            || item.file.parents.is_empty()
+    } else {
+        item.file.parents.iter().any(|parent| parent == parent_id)
+    }
+}
+
+fn find_folder_child_in_inventory<'a>(
+    items: &'a [InventoryItem],
+    parent_id: &str,
+    name: &str,
+) -> Option<&'a InventoryItem> {
+    items.iter().find(|item| {
+        !item.file.trashed
+            && item.file.mime_type == GOOGLE_DRIVE_FOLDER_MIME
+            && item.file.name == name
+            && folder_has_parent(item, parent_id)
+    })
+}
+
+fn my_drive_root_destination() -> InventoryItem {
+    synthetic_destination_folder(MY_DRIVE_ROOT_ID, MY_DRIVE_ROOT_PATH, "My Drive")
+}
+
+fn synthetic_destination_folder(folder_id: &str, folder_path: &str, name: &str) -> InventoryItem {
+    InventoryItem {
+        file: FileRecord {
+            id: folder_id.to_string(),
+            name: name.to_string(),
+            mime_type: GOOGLE_DRIVE_FOLDER_MIME.into(),
+            parents: vec![MY_DRIVE_ROOT_ID.to_string()],
+            owned_by_me: true,
+            operator_can_share_manage: true,
+            trashed: false,
+            ..FileRecord::default()
+        },
+        path: PathEntry {
+            file_id: folder_id.to_string(),
+            primary_path: folder_path.to_string(),
+            all_paths: vec![folder_path.to_string()],
+            depth: folder_path.split('/').filter(|segment| !segment.is_empty()).count(),
+            path_state: PathState::Resolved,
+        },
+    }
+}
+
+pub fn plan_destination_provisioning(
+    items: &[InventoryItem],
+    path: &str,
+    provision_missing: bool,
+) -> CoreResult<DestinationProvisioningPlan> {
+    let segments = parse_destination_path(path)?;
+    if segments.is_empty() {
+        return Ok(DestinationProvisioningPlan {
+            rows: Vec::new(),
+            destination_folder_id: Some(MY_DRIVE_ROOT_ID.to_string()),
+            destination_path: MY_DRIVE_ROOT_PATH.to_string(),
+            create_count: 0,
+            is_root: true,
+        });
+    }
+
+    let mut rows = Vec::new();
+    let mut parent_id = MY_DRIVE_ROOT_ID.to_string();
+    let mut parent_path = MY_DRIVE_ROOT_PATH.to_string();
+    let mut destination_folder_id = None::<String>;
+    let mut create_count = 0usize;
+    let destination_path = if path.trim().starts_with('/') {
+        path.trim().to_string()
+    } else {
+        format!("/{}", path.trim())
+    };
+
+    for segment in segments {
+        let folder_path = if parent_path == MY_DRIVE_ROOT_PATH {
+            format!("/{segment}")
+        } else {
+            format!("{parent_path}/{segment}")
+        };
+        if let Some(existing) = find_folder_child_in_inventory(items, &parent_id, &segment) {
+            rows.push(DestinationProvisioningRow {
+                parent_id: parent_id.clone(),
+                parent_path: parent_path.clone(),
+                folder_name: segment.clone(),
+                folder_path: folder_path.clone(),
+                exists: true,
+                existing_folder_id: Some(existing.file.id.clone()),
+            });
+            parent_id = existing.file.id.clone();
+            parent_path = folder_path;
+            destination_folder_id = Some(parent_id.clone());
+        } else if provision_missing {
+            rows.push(DestinationProvisioningRow {
+                parent_id: parent_id.clone(),
+                parent_path: parent_path.clone(),
+                folder_name: segment,
+                folder_path: folder_path.clone(),
+                exists: false,
+                existing_folder_id: None,
+            });
+            create_count += 1;
+            parent_id = format!("pending:{folder_path}");
+            parent_path = folder_path;
+            destination_folder_id = None;
+        } else {
+            return Err(CoreError::Message(format!(
+                "destination folder path `{folder_path}` was not found in the local snapshot; pass --provision-missing to create it during apply"
+            )));
+        }
+    }
+
+    Ok(DestinationProvisioningPlan {
+        rows,
+        destination_folder_id,
+        destination_path,
+        create_count,
+        is_root: false,
+    })
+}
+
+fn resolve_move_destination_item(
+    items: &[InventoryItem],
+    target: &MoveDestinationTarget,
+    options: &MoveOptions,
+) -> CoreResult<(Option<DestinationProvisioningPlan>, InventoryItem)> {
+    match target {
+        MoveDestinationTarget::Root => Ok((None, my_drive_root_destination())),
+        MoveDestinationTarget::FolderId(folder_id) => {
+            if folder_id == MY_DRIVE_ROOT_ID {
+                return Ok((None, my_drive_root_destination()));
+            }
+            let items_by_id = items
+                .iter()
+                .cloned()
+                .map(|item| (item.file.id.clone(), item))
+                .collect::<HashMap<_, _>>();
+            let Some(destination) = items_by_id.get(folder_id).cloned() else {
+                return Err(CoreError::Message(format!(
+                    "destination folder `{folder_id}` was not found in the local snapshot"
+                )));
+            };
+            Ok((None, destination))
+        }
+        MoveDestinationTarget::Path(path) => {
+            let provisioning =
+                plan_destination_provisioning(items, path, options.provision_missing)?;
+            let destination = if let Some(folder_id) = &provisioning.destination_folder_id {
+                items.iter().find(|item| item.file.id == *folder_id).cloned().unwrap_or_else(|| {
+                    synthetic_destination_folder(
+                        folder_id,
+                        &provisioning.destination_path,
+                        provisioning.rows.last().map(|row| row.folder_name.as_str()).unwrap_or(""),
+                    )
+                })
+            } else {
+                let last = provisioning
+                    .rows
+                    .last()
+                    .expect("provisioning rows should exist when destination is pending");
+                synthetic_destination_folder(
+                    "pending-destination",
+                    &provisioning.destination_path,
+                    &last.folder_name,
+                )
+            };
+            Ok((Some(provisioning), destination))
+        }
+    }
+}
+
+pub fn move_orchestration_plan<R: InventoryRepository + ?Sized>(
+    repository: &R,
+    query: &InventoryQuery,
+    target: MoveDestinationTarget,
+    options: &MoveOptions,
+) -> CoreResult<MoveOrchestrationPlan> {
+    let items = repository.load_inventory_items()?;
+    let (provisioning, destination) = resolve_move_destination_item(&items, &target, options)?;
+    let selected_items = apply_inventory_query(items.clone(), query);
+    let mut move_plan = build_move_plan(&items, selected_items, &destination)?;
+    move_plan.provisioning = provisioning.clone();
+    Ok(MoveOrchestrationPlan { provisioning, move_plan })
+}
+
 pub fn move_plan<R: InventoryRepository + ?Sized>(
     repository: &R,
     query: &InventoryQuery,
     destination_folder_id: &str,
 ) -> CoreResult<MovePlan> {
-    let items = repository.load_inventory_items()?;
-    let selected_items = apply_inventory_query(items.clone(), query);
-    build_move_plan(&items, selected_items, destination_folder_id)
+    let target = if destination_folder_id == MY_DRIVE_ROOT_ID {
+        MoveDestinationTarget::Root
+    } else {
+        MoveDestinationTarget::FolderId(destination_folder_id.to_string())
+    };
+    Ok(move_orchestration_plan(repository, query, target, &MoveOptions::default())?.move_plan)
+}
+
+fn build_created_folder_entry(
+    row: &DestinationProvisioningRow,
+    folder_id: &str,
+    at: DateTime<Utc>,
+    command: &str,
+    status: &str,
+    provision_path: &str,
+    note: Option<String>,
+) -> CreatedFolderEntry {
+    CreatedFolderEntry {
+        at,
+        command: command.to_string(),
+        status: status.to_string(),
+        folder_id: folder_id.to_string(),
+        folder_name: row.folder_name.clone(),
+        folder_path: row.folder_path.clone(),
+        parent_id: row.parent_id.clone(),
+        parent_path: row.parent_path.clone(),
+        provision_path: provision_path.to_string(),
+        create_via: "tool".into(),
+        note,
+    }
+}
+
+pub async fn apply_destination_provisioning<G, R>(
+    gateway: &G,
+    repository: &R,
+    plan: &DestinationProvisioningPlan,
+    command: &str,
+) -> CoreResult<String>
+where
+    G: DriveGateway + ?Sized,
+    R: InventoryRepository + ?Sized,
+{
+    if plan.create_count == 0 {
+        return Ok(plan
+            .destination_folder_id
+            .clone()
+            .unwrap_or_else(|| MY_DRIVE_ROOT_ID.to_string()));
+    }
+
+    gateway.ensure_scope(DriveScope::Drive).await?;
+    let mut current_parent_id = MY_DRIVE_ROOT_ID.to_string();
+    for row in &plan.rows {
+        if row.exists {
+            current_parent_id = row
+                .existing_folder_id
+                .clone()
+                .expect("existing provisioning row should include folder id");
+            continue;
+        }
+
+        let pending_at = Utc::now();
+        repository.append_audit_log(&AuditLogEntry {
+            at: pending_at,
+            command: command.to_string(),
+            action: "create_destination_folder_pending".into(),
+            file_id: current_parent_id.clone(),
+            permission_id: String::new(),
+            target_label: row.folder_path.clone(),
+            dry_run: false,
+            source_file_id: Some(row.parent_id.clone()),
+            backup_file_id: Some(row.folder_name.clone()),
+        })?;
+        repository.append_created_folder(&build_created_folder_entry(
+            row,
+            "pending",
+            pending_at,
+            command,
+            "pending",
+            &plan.destination_path,
+            None,
+        ))?;
+
+        let folder = if let Some(existing) =
+            gateway.find_file_in_folder(&current_parent_id, &row.folder_name).await?
+        {
+            FileRecord {
+                id: existing.id,
+                name: existing.name,
+                mime_type: existing.mime_type,
+                parents: vec![current_parent_id.clone()],
+                owned_by_me: existing.owned_by_me,
+                operator_can_share_manage: true,
+                trashed: false,
+                ..FileRecord::default()
+            }
+        } else {
+            gateway.create_folder(&current_parent_id, &row.folder_name).await?
+        };
+
+        let applied_at = Utc::now();
+        repository.append_audit_log(&AuditLogEntry {
+            at: applied_at,
+            command: command.to_string(),
+            action: "create_destination_folder".into(),
+            file_id: folder.id.clone(),
+            permission_id: String::new(),
+            target_label: row.folder_path.clone(),
+            dry_run: false,
+            source_file_id: Some(row.parent_id.clone()),
+            backup_file_id: Some(folder.id.clone()),
+        })?;
+        repository.append_created_folder(&build_created_folder_entry(
+            row,
+            &folder.id,
+            applied_at,
+            command,
+            "applied",
+            &plan.destination_path,
+            None,
+        ))?;
+        current_parent_id = folder.id;
+    }
+
+    Ok(current_parent_id)
+}
+
+async fn apply_move_from_plan<G, R>(
+    gateway: &G,
+    repository: &R,
+    plan: &MovePlan,
+    command: &str,
+) -> CoreResult<MoveApplySummary>
+where
+    G: DriveGateway + ?Sized,
+    R: InventoryRepository + ?Sized,
+{
+    if plan.actionable_count == 0 {
+        return Ok(MoveApplySummary {
+            planned: plan.rows.len(),
+            applied: 0,
+            skipped: plan.rows.len(),
+        });
+    }
+
+    gateway.ensure_scope(DriveScope::Drive).await?;
+    let all_items = repository.load_inventory_items()?;
+    let items_by_id = all_items
+        .iter()
+        .cloned()
+        .map(|item| (item.file.id.clone(), item))
+        .collect::<HashMap<_, _>>();
+    let children_by_parent = build_children_by_parent(&all_items);
+
+    let mut actionable_rows =
+        plan.rows.iter().filter(|row| row.actionable).cloned().collect::<Vec<_>>();
+    actionable_rows.sort_by(|left, right| {
+        let left_is_folder = left.item.file.mime_type == GOOGLE_DRIVE_FOLDER_MIME;
+        let right_is_folder = right.item.file.mime_type == GOOGLE_DRIVE_FOLDER_MIME;
+        right_is_folder
+            .cmp(&left_is_folder)
+            .then_with(|| left.item.file.name.cmp(&right.item.file.name))
+    });
+
+    let mut applied = 0usize;
+    for row in actionable_rows {
+        let pending_at = Utc::now();
+        for entry in build_moved_file_entries(
+            &row,
+            &items_by_id,
+            &children_by_parent,
+            pending_at,
+            command,
+            "pending",
+        ) {
+            repository.append_audit_log(&AuditLogEntry {
+                at: pending_at,
+                command: command.to_string(),
+                action: "move_file_pending".into(),
+                file_id: entry.file_id.clone(),
+                permission_id: String::new(),
+                target_label: entry.to_path.clone(),
+                dry_run: false,
+                source_file_id: Some(entry.from_parent_ids.join(",")),
+                backup_file_id: Some(entry.to_parent_id.clone()),
+            })?;
+            repository.append_moved_file(&entry)?;
+        }
+        gateway.move_file(&row.item.file.id, &row.to_parent_id, &row.from_parent_ids).await?;
+
+        let applied_at = Utc::now();
+        for entry in build_moved_file_entries(
+            &row,
+            &items_by_id,
+            &children_by_parent,
+            applied_at,
+            command,
+            "applied",
+        ) {
+            repository.append_audit_log(&AuditLogEntry {
+                at: applied_at,
+                command: command.to_string(),
+                action: "move_file".into(),
+                file_id: entry.file_id.clone(),
+                permission_id: String::new(),
+                target_label: entry.to_path.clone(),
+                dry_run: false,
+                source_file_id: Some(entry.from_parent_ids.join(",")),
+                backup_file_id: Some(entry.to_parent_id.clone()),
+            })?;
+            repository.append_moved_file(&entry)?;
+        }
+        applied += 1;
+    }
+
+    Ok(MoveApplySummary {
+        planned: plan.rows.len(),
+        applied,
+        skipped: plan.rows.len().saturating_sub(applied),
+    })
+}
+
+pub async fn apply_move_orchestration<G, R>(
+    gateway: &G,
+    repository: &R,
+    query: &InventoryQuery,
+    target: MoveDestinationTarget,
+    options: &MoveOptions,
+    command: &str,
+) -> CoreResult<MoveOrchestrationApplySummary>
+where
+    G: DriveGateway + ?Sized,
+    R: InventoryRepository + ?Sized,
+{
+    ensure_committed_snapshot(repository)?;
+    let orchestration = move_orchestration_plan(repository, query, target, options)?;
+    let provisioning_created =
+        orchestration.provisioning.as_ref().map(|plan| plan.create_count).unwrap_or(0);
+
+    let destination_id = if let Some(provisioning) = &orchestration.provisioning {
+        if provisioning.create_count > 0 {
+            apply_destination_provisioning(gateway, repository, provisioning, command).await?
+        } else {
+            provisioning
+                .destination_folder_id
+                .clone()
+                .unwrap_or_else(|| MY_DRIVE_ROOT_ID.to_string())
+        }
+    } else {
+        orchestration
+            .move_plan
+            .destination
+            .as_ref()
+            .map(|destination| destination.folder.file.id.clone())
+            .unwrap_or_else(|| MY_DRIVE_ROOT_ID.to_string())
+    };
+
+    let move_plan = if provisioning_created > 0 {
+        let items = repository.load_inventory_items()?;
+        let destination_path = orchestration
+            .provisioning
+            .as_ref()
+            .map(|provisioning| provisioning.destination_path.as_str())
+            .unwrap_or(MY_DRIVE_ROOT_PATH);
+        let destination_name = orchestration
+            .provisioning
+            .as_ref()
+            .and_then(|provisioning| provisioning.rows.last())
+            .map(|row| row.folder_name.as_str())
+            .unwrap_or("My Drive");
+        let destination =
+            synthetic_destination_folder(&destination_id, destination_path, destination_name);
+        let selected_items = apply_inventory_query(items.clone(), query);
+        build_move_plan(&items, selected_items, &destination)?
+    } else {
+        orchestration.move_plan
+    };
+    let move_summary = apply_move_from_plan(gateway, repository, &move_plan, command).await?;
+    Ok(MoveOrchestrationApplySummary { provisioning_created, move_summary })
 }
 
 pub async fn apply_move<G, R>(
@@ -1344,80 +1919,33 @@ where
     G: DriveGateway + ?Sized,
     R: InventoryRepository + ?Sized,
 {
-    ensure_committed_snapshot(repository)?;
-    let plan = move_plan(repository, query, destination_folder_id)?;
-    if plan.actionable_count == 0 {
-        return Ok(MoveApplySummary {
-            planned: plan.rows.len(),
-            applied: 0,
-            skipped: plan.rows.len(),
-        });
-    }
-
-    gateway.ensure_scope(DriveScope::Drive).await?;
-    let mut applied = 0usize;
-    for row in &plan.rows {
-        if !row.actionable {
-            continue;
-        }
-
-        let pending_at = Utc::now();
-        repository.append_audit_log(&AuditLogEntry {
-            at: pending_at,
-            command: command.to_string(),
-            action: "move_file_pending".into(),
-            file_id: row.item.file.id.clone(),
-            permission_id: String::new(),
-            target_label: row.to_path.clone(),
-            dry_run: false,
-            source_file_id: Some(row.from_parent_ids.join(",")),
-            backup_file_id: Some(row.to_parent_id.clone()),
-        })?;
-        repository.append_moved_file(&build_moved_file_entry(
-            row, pending_at, command, "pending", None,
-        ))?;
-        gateway.move_file(&row.item.file.id, &row.to_parent_id, &row.from_parent_ids).await?;
-
-        let applied_at = Utc::now();
-        repository.append_audit_log(&AuditLogEntry {
-            at: applied_at,
-            command: command.to_string(),
-            action: "move_file".into(),
-            file_id: row.item.file.id.clone(),
-            permission_id: String::new(),
-            target_label: row.to_path.clone(),
-            dry_run: false,
-            source_file_id: Some(row.from_parent_ids.join(",")),
-            backup_file_id: Some(row.to_parent_id.clone()),
-        })?;
-        repository.append_moved_file(&build_moved_file_entry(
-            row, applied_at, command, "applied", None,
-        ))?;
-        applied += 1;
-    }
-
-    Ok(MoveApplySummary {
-        planned: plan.rows.len(),
-        applied,
-        skipped: plan.rows.len().saturating_sub(applied),
-    })
+    let target = if destination_folder_id == MY_DRIVE_ROOT_ID {
+        MoveDestinationTarget::Root
+    } else {
+        MoveDestinationTarget::FolderId(destination_folder_id.to_string())
+    };
+    Ok(apply_move_orchestration(
+        gateway,
+        repository,
+        query,
+        target,
+        &MoveOptions::default(),
+        command,
+    )
+    .await?
+    .move_summary)
 }
 
 fn build_move_plan(
     all_items: &[InventoryItem],
     selected_items: Vec<InventoryItem>,
-    destination_folder_id: &str,
+    destination: &InventoryItem,
 ) -> CoreResult<MovePlan> {
     let items_by_id = all_items
         .iter()
         .cloned()
         .map(|item| (item.file.id.clone(), item))
         .collect::<HashMap<_, _>>();
-    let Some(destination) = items_by_id.get(destination_folder_id).cloned() else {
-        return Err(CoreError::Message(format!(
-            "destination folder `{destination_folder_id}` was not found in the local snapshot"
-        )));
-    };
     let children_by_parent = build_children_by_parent(all_items);
     let selected_ids =
         selected_items.iter().map(|item| item.file.id.clone()).collect::<BTreeSet<_>>();
@@ -1450,7 +1978,8 @@ fn build_move_plan(
         };
         let (descendant_file_count, descendant_folder_count, _) =
             count_descendants(&items_by_id, &subtree_ids, &item.file.id);
-        let reason = classify_move_reason(&item, &destination, &subtree_ids);
+        let from_parent_ids = effective_parent_ids(&item.file);
+        let reason = classify_move_reason(&item, destination, &subtree_ids, &from_parent_ids);
         let actionable = matches!(reason, MoveReasonCode::Actionable);
 
         if is_folder {
@@ -1465,7 +1994,7 @@ fn build_move_plan(
         }
 
         plan.rows.push(MovePreviewRow {
-            from_parent_ids: item.file.parents.clone(),
+            from_parent_ids,
             to_parent_id: destination.file.id.clone(),
             to_path: destination.path.primary_path.clone(),
             item,
@@ -1483,20 +2012,20 @@ fn classify_move_reason(
     item: &InventoryItem,
     destination: &InventoryItem,
     source_subtree_ids: &BTreeSet<String>,
+    from_parent_ids: &[String],
 ) -> MoveReasonCode {
+    let destination_is_root = destination.file.id == MY_DRIVE_ROOT_ID;
     if item.file.trashed {
         MoveReasonCode::SourceTrashed
     } else if destination.file.trashed {
         MoveReasonCode::DestinationTrashed
-    } else if destination.file.mime_type != GOOGLE_DRIVE_FOLDER_MIME {
+    } else if !destination_is_root && destination.file.mime_type != GOOGLE_DRIVE_FOLDER_MIME {
         MoveReasonCode::DestinationNotFolder
-    } else if !destination.file.operator_can_share_manage {
+    } else if !destination_is_root && !destination.file.operator_can_share_manage {
         MoveReasonCode::DestinationNotOwnedOrManageable
     } else if !item.file.operator_can_share_manage {
         MoveReasonCode::NotOwnedOrManageable
-    } else if item.file.parents.is_empty() {
-        MoveReasonCode::MissingParents
-    } else if item.file.parents.iter().any(|parent| parent == &destination.file.id) {
+    } else if from_parent_ids.iter().any(|parent| parent == &destination.file.id) {
         MoveReasonCode::DestinationIsCurrentParent
     } else if item.file.id == destination.file.id {
         MoveReasonCode::DestinationIsSelf
@@ -1509,26 +2038,75 @@ fn classify_move_reason(
 
 fn build_moved_file_entry(
     row: &MovePreviewRow,
+    item: &InventoryItem,
+    from_parent_ids: &[String],
     at: DateTime<Utc>,
     command: &str,
     status: &str,
+    explicitly_requested: bool,
+    moved_via_file_id: Option<String>,
+    moved_via_path: Option<String>,
     note: Option<String>,
 ) -> MovedFileEntry {
     MovedFileEntry {
         at,
         command: command.to_string(),
         status: status.to_string(),
-        file_id: row.item.file.id.clone(),
-        file_name: row.item.file.name.clone(),
-        file_path: row.item.path.primary_path.clone(),
-        mime_type: row.item.file.mime_type.clone(),
-        from_parent_ids: row.from_parent_ids.clone(),
-        from_path: row.item.path.primary_path.clone(),
+        file_id: item.file.id.clone(),
+        file_name: item.file.name.clone(),
+        file_path: item.path.primary_path.clone(),
+        mime_type: item.file.mime_type.clone(),
+        from_parent_ids: from_parent_ids.to_vec(),
+        from_path: item.path.primary_path.clone(),
         to_parent_id: row.to_parent_id.clone(),
         to_path: row.to_path.clone(),
         move_via: "tool".into(),
         note,
+        moved_via_file_id,
+        moved_via_path,
+        explicitly_requested,
     }
+}
+
+fn build_moved_file_entries(
+    row: &MovePreviewRow,
+    items_by_id: &HashMap<String, InventoryItem>,
+    children_by_parent: &HashMap<String, Vec<String>>,
+    at: DateTime<Utc>,
+    command: &str,
+    status: &str,
+) -> Vec<MovedFileEntry> {
+    let subtree_ids = if row.item.file.mime_type == GOOGLE_DRIVE_FOLDER_MIME {
+        collect_subtree_ids(&row.item.file.id, children_by_parent)
+    } else {
+        BTreeSet::from([row.item.file.id.clone()])
+    };
+
+    let mut entries = Vec::new();
+    for file_id in subtree_ids {
+        let Some(item) = items_by_id.get(&file_id) else {
+            continue;
+        };
+        let explicitly_requested = file_id == row.item.file.id;
+        let from_parent_ids = if explicitly_requested {
+            row.from_parent_ids.clone()
+        } else {
+            effective_parent_ids(&item.file)
+        };
+        entries.push(build_moved_file_entry(
+            row,
+            item,
+            &from_parent_ids,
+            at,
+            command,
+            status,
+            explicitly_requested,
+            (!explicitly_requested).then(|| row.item.file.id.clone()),
+            (!explicitly_requested).then(|| row.item.path.primary_path.clone()),
+            None,
+        ));
+    }
+    entries
 }
 
 pub fn trash_plan<R: InventoryRepository + ?Sized>(

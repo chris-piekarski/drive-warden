@@ -8,12 +8,13 @@ use chrono::{Duration, Utc};
 use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Generator};
 use gdrive_core::{
-    apply_move, apply_trash, apply_unshare, apply_unshare_with_options, auth_status,
-    duplicate_groups, inspect_exif, inspect_file_details, login, logout, move_plan,
+    apply_move_orchestration, apply_trash, apply_unshare, apply_unshare_with_options, auth_status,
+    duplicate_groups, inspect_exif, inspect_file_details, login, logout, move_orchestration_plan,
     sharing_findings, storage_summary, sync_inventory, trash_plan, unshare_plan,
     unshare_plan_with_options, DriveGateway, DriveScope, InventoryQuery, InventoryRepository,
-    OwnerScope, RemoteDbEndpoint, RemoteDbManifest, RemoteDbSyncDecision, RemoteFileMetadata,
-    ReportWriter, RetainCopyOptions, SharedWithFilter, TrashOptions, TrashedFileEntry, APP_NAME,
+    MoveDestinationTarget, MoveOptions, OwnerScope, RemoteDbEndpoint, RemoteDbManifest,
+    RemoteDbSyncDecision, RemoteFileMetadata, ReportWriter, RetainCopyOptions, SharedWithFilter,
+    TrashOptions, TrashedFileEntry, APP_NAME,
 };
 use gdrive_db::{DatabaseStats, RemoteSyncDirection, SqliteInventoryRepository, VacuumResult};
 use gdrive_drive::{GoogleDriveGateway, MockDriveGateway};
@@ -368,9 +369,11 @@ async fn run(cli: Cli) -> Result<()> {
             let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
             let gateway = runtime.build_gateway();
             let query = build_inventory_query(&args.filters, None)?;
-            let destination_folder_id = resolve_move_destination(&repository, &args)?;
-            let plan = move_plan(&repository, &query, &destination_folder_id)
+            let target = move_destination_target_from_args(&args)?;
+            let options = move_options_from_args(&args);
+            let orchestration = move_orchestration_plan(&repository, &query, target, &options)
                 .map_err(anyhow::Error::msg)?;
+            let plan = orchestration.move_plan;
 
             if args.dry_run && args.apply {
                 bail!("`--dry-run` cannot be combined with `--apply`");
@@ -387,16 +390,22 @@ async fn run(cli: Cli) -> Result<()> {
                     confirm_move_apply(&plan)?;
                 }
 
-                let pre_mutation_release = if plan.actionable_count > 0 {
+                let will_mutate = plan.actionable_count > 0
+                    || orchestration
+                        .provisioning
+                        .as_ref()
+                        .is_some_and(|provisioning| provisioning.create_count > 0);
+                let pre_mutation_release = if will_mutate {
                     Some(create_pre_mutation_release(gateway.as_ref(), &runtime, "move").await?)
                 } else {
                     None
                 };
-                let apply_summary = apply_move(
+                let apply_summary = apply_move_orchestration(
                     gateway.as_ref(),
                     &repository,
                     &query,
-                    &destination_folder_id,
+                    move_destination_target_from_args(&args)?,
+                    &options,
                     "move",
                 )
                 .await
@@ -413,6 +422,12 @@ async fn run(cli: Cli) -> Result<()> {
                 )?;
                 Ok(())
             }
+        }
+        Command::MoveHistory(args) => {
+            let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
+            let entries = load_filtered_move_history(&repository, args.limit, args.only_pending)?;
+            print_move_history(cli.format, &entries)?;
+            Ok(())
         }
         Command::TrashHistory(args) => {
             let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
@@ -561,10 +576,15 @@ enum Command {
     )]
     Trash(TrashArgs),
     #[command(
-        about = "Preview or apply moves into an existing folder",
-        after_help = "Safety: move commands default to dry-run and require an existing destination folder.\nExamples:\n  drive-warden move --path '[orphan]/eBooks/*' --to-path '/Archive/eBooks'\n  drive-warden move --file-id <id> --to-folder-id <folder-id> --apply --yes"
+        about = "Preview or apply parent changes into folders",
+        after_help = "Safety: move commands default to dry-run. Use --to-root for My Drive root, --provision-missing to create destination paths during apply, and move-history to audit completed moves.\nExamples:\n  drive-warden move --path '[orphan]/eBooks/*' --to-path '/Archive/eBooks'\n  drive-warden move --file-id <id> --to-root --apply --yes\n  drive-warden move --path '/Docs/*' --to-path '/Archive/New' --provision-missing --apply --yes"
     )]
     Move(MoveArgs),
+    #[command(
+        about = "Show append-only move history",
+        after_help = "Examples:\n  drive-warden move-history\n  drive-warden move-history --only-pending --limit 100"
+    )]
+    MoveHistory(MoveHistoryArgs),
     #[command(
         about = "Show append-only trash history",
         after_help = "Examples:\n  drive-warden trash-history\n  drive-warden trash-history --only-pending --limit 100"
@@ -743,7 +763,7 @@ struct TrashArgs {
 #[command(group(
     ArgGroup::new("destination")
         .required(true)
-        .args(["to_folder_id", "to_path"])
+        .args(["to_folder_id", "to_path", "to_root"])
 ))]
 struct MoveArgs {
     #[command(flatten)]
@@ -752,12 +772,24 @@ struct MoveArgs {
     to_folder_id: Option<String>,
     #[arg(long = "to-path")]
     to_path: Option<String>,
+    #[arg(long = "to-root", action = ArgAction::SetTrue)]
+    to_root: bool,
+    #[arg(long = "provision-missing", action = ArgAction::SetTrue)]
+    provision_missing: bool,
     #[arg(long, action = ArgAction::SetTrue)]
     dry_run: bool,
     #[arg(long, action = ArgAction::SetTrue)]
     apply: bool,
     #[arg(long, action = ArgAction::SetTrue)]
     yes: bool,
+}
+
+#[derive(Debug, Args)]
+struct MoveHistoryArgs {
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
+    #[arg(long, action = ArgAction::SetTrue)]
+    only_pending: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1072,33 +1104,19 @@ fn retain_copy_options_from_args(args: &UnshareArgs) -> RetainCopyOptions {
     RetainCopyOptions { enabled: args.retain_copy, backup_root_id: args.backup_root_id.clone() }
 }
 
-fn resolve_move_destination(
-    repository: &SqliteInventoryRepository,
-    args: &MoveArgs,
-) -> Result<String> {
+fn move_destination_target_from_args(args: &MoveArgs) -> Result<MoveDestinationTarget> {
+    if args.to_root {
+        return Ok(MoveDestinationTarget::Root);
+    }
     if let Some(folder_id) = &args.to_folder_id {
-        return Ok(folder_id.clone());
+        return Ok(MoveDestinationTarget::FolderId(folder_id.clone()));
     }
-    let path = args.to_path.as_ref().context("move destination is required")?;
-    let matches = repository
-        .load_inventory_items()
-        .map_err(anyhow::Error::msg)?
-        .into_iter()
-        .filter(|item| {
-            !item.file.trashed
-                && item.file.mime_type == gdrive_core::GOOGLE_DRIVE_FOLDER_MIME
-                && (item.path.primary_path == *path
-                    || item.path.all_paths.iter().any(|p| p == path))
-        })
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [item] => Ok(item.file.id.clone()),
-        [] => bail!("destination folder path `{path}` was not found in the local snapshot"),
-        _ => bail!(
-            "destination folder path `{path}` matched {} folders; use --to-folder-id instead",
-            matches.len()
-        ),
-    }
+    let path = args.to_path.as_ref().context("move destination is required")?.clone();
+    Ok(MoveDestinationTarget::Path(path))
+}
+
+fn move_options_from_args(args: &MoveArgs) -> MoveOptions {
+    MoveOptions { provision_missing: args.provision_missing }
 }
 
 fn parse_older_than_days(raw: &str) -> Result<i64> {
@@ -1466,6 +1484,22 @@ fn print_move_preview(format: OutputFormat, plan: &gdrive_core::MovePlan) -> Res
                 plan.folder_count,
                 destination
             );
+            if let Some(provisioning) = &plan.provisioning {
+                if !provisioning.rows.is_empty() {
+                    println!(
+                        "destination provisioning: create={} path={}",
+                        provisioning.create_count, provisioning.destination_path
+                    );
+                    for row in &provisioning.rows {
+                        println!(
+                            "  {} parent={} exists={}",
+                            row.folder_path,
+                            row.parent_path,
+                            if row.exists { "yes" } else { "no" }
+                        );
+                    }
+                }
+            }
             for row in &plan.rows {
                 println!(
                     "{}  {}  -> {}  reason={} actionable={} descendants=files:{} folders:{}",
@@ -1486,7 +1520,7 @@ fn print_move_preview(format: OutputFormat, plan: &gdrive_core::MovePlan) -> Res
 fn print_move_apply_summary(
     format: OutputFormat,
     plan: &gdrive_core::MovePlan,
-    apply_summary: &gdrive_core::MoveApplySummary,
+    apply_summary: &gdrive_core::MoveOrchestrationApplySummary,
     sync_summary: &gdrive_core::SyncSummary,
     pre_mutation_release: Option<&RemoteDbRelease>,
 ) -> Result<()> {
@@ -1507,6 +1541,16 @@ fn print_move_apply_summary(
                     release.name, release.db_file.id, release.manifest_file.id
                 );
             }
+            if apply_summary.provisioning_created > 0 {
+                println!(
+                    "destination provisioning: created={} path={}",
+                    apply_summary.provisioning_created,
+                    plan.provisioning
+                        .as_ref()
+                        .map(|provisioning| provisioning.destination_path.as_str())
+                        .unwrap_or("unknown")
+                );
+            }
             let destination = plan
                 .destination
                 .as_ref()
@@ -1514,7 +1558,10 @@ fn print_move_apply_summary(
                 .unwrap_or("unknown");
             println!(
                 "move applied: planned={} applied={} skipped={} destination={}",
-                apply_summary.planned, apply_summary.applied, apply_summary.skipped, destination
+                apply_summary.move_summary.planned,
+                apply_summary.move_summary.applied,
+                apply_summary.move_summary.skipped,
+                destination
             );
             println!(
                 "post-apply sync: mode={} files={} token={}",
@@ -2575,6 +2622,50 @@ fn print_operator_status(format: OutputFormat, status: &OperatorStatus) -> Resul
     Ok(())
 }
 
+fn load_filtered_move_history(
+    repository: &SqliteInventoryRepository,
+    limit: usize,
+    only_pending: bool,
+) -> Result<Vec<gdrive_core::MovedFileEntry>> {
+    let mut entries = repository.load_moved_files().map_err(anyhow::Error::msg)?;
+    if only_pending {
+        let applied = entries
+            .iter()
+            .filter(|entry| entry.status == "applied")
+            .map(|entry| (entry.file_id.clone(), entry.at))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        entries.retain(|entry| {
+            entry.status == "pending"
+                && applied.get(&entry.file_id).is_none_or(|applied_at| entry.at >= *applied_at)
+        });
+    }
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.at));
+    if entries.len() > limit {
+        entries.truncate(limit);
+    }
+    Ok(entries)
+}
+
+fn print_move_history(format: OutputFormat, entries: &[gdrive_core::MovedFileEntry]) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(entries)?),
+        OutputFormat::Table => {
+            println!("move history: rows={}", entries.len());
+            for entry in entries {
+                println!(
+                    "{}  status={}  explicit={}  {} -> {}",
+                    entry.at.to_rfc3339(),
+                    entry.status,
+                    if entry.explicitly_requested { "yes" } else { "no" },
+                    entry.from_path,
+                    entry.to_path
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn load_filtered_trash_history(
     repository: &SqliteInventoryRepository,
     limit: usize,
@@ -2764,10 +2855,19 @@ fn confirm_move_apply(plan: &gdrive_core::MovePlan) -> Result<()> {
         .as_ref()
         .map(|destination| destination.folder.path.primary_path.as_str())
         .unwrap_or("unknown");
-    print!(
-        "Move {} actionable item(s) into `{}`, skip {} row(s)? [y/N]: ",
-        plan.actionable_count, destination, plan.skipped_count
-    );
+    let create_count =
+        plan.provisioning.as_ref().map(|provisioning| provisioning.create_count).unwrap_or(0);
+    if create_count > 0 {
+        print!(
+            "Create {} destination folder(s), move {} actionable item(s) into `{}`, skip {} row(s)? [y/N]: ",
+            create_count, plan.actionable_count, destination, plan.skipped_count
+        );
+    } else {
+        print!(
+            "Move {} actionable item(s) into `{}`, skip {} row(s)? [y/N]: ",
+            plan.actionable_count, destination, plan.skipped_count
+        );
+    }
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;

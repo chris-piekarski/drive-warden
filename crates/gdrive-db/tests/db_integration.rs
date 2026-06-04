@@ -1,7 +1,7 @@
 use chrono::Utc;
 use gdrive_core::{
-    AccountProfile, AuditLogEntry, DriveScope, FileRecord, FullSnapshot, InventoryRepository,
-    MovedFileEntry, RevokedShareEntry, SyncMode, SyncStats, SyncStatus,
+    AccountProfile, AuditLogEntry, CreatedFolderEntry, DriveScope, FileRecord, FullSnapshot,
+    InventoryRepository, MovedFileEntry, RevokedShareEntry, SyncMode, SyncStats, SyncStatus,
 };
 use gdrive_db::SqliteInventoryRepository;
 
@@ -64,6 +64,9 @@ fn repository_persists_moved_file_history() {
             to_path: "/Archive".into(),
             move_via: "tool".into(),
             note: Some("test note".into()),
+            moved_via_file_id: None,
+            moved_via_path: None,
+            explicitly_requested: true,
         })
         .expect("append moved file");
 
@@ -148,4 +151,34 @@ fn repository_persists_sync_state_and_snapshot() {
     let audit = repository.load_audit_log().expect("audit");
     assert_eq!(audit.len(), 1);
     assert_eq!(audit[0].permission_id, "perm-1");
+}
+
+#[test]
+fn repository_persists_created_folder_history() {
+    let temp_dir = tempfile::TempDir::new().expect("tempdir");
+    let repository =
+        SqliteInventoryRepository::new(temp_dir.path().join("inventory.db")).expect("repo");
+
+    assert!(repository.load_created_folders().expect("empty folder history").is_empty());
+
+    repository
+        .append_created_folder(&CreatedFolderEntry {
+            at: Utc::now(),
+            command: "move".into(),
+            status: "applied".into(),
+            folder_id: "new-folder".into(),
+            folder_name: "New".into(),
+            folder_path: "/Archive/New".into(),
+            parent_id: "archive".into(),
+            parent_path: "/Archive".into(),
+            provision_path: "/Archive/New".into(),
+            create_via: "tool".into(),
+            note: None,
+        })
+        .expect("append created folder");
+
+    let history = repository.load_created_folders().expect("folder history");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].folder_id, "new-folder");
+    assert_eq!(history[0].provision_path, "/Archive/New");
 }

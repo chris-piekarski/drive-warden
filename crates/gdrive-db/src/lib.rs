@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use gdrive_core::{
     build_inventory_items, build_path_entries, AccountProfile, AuditLogEntry, CoreError,
-    CoreResult, DriveScope, FileRecord, FullSnapshot, InventoryItem, InventoryRepository,
-    MovedFileEntry, PathEntry, PathState, PermissionRecord, RevokedShareEntry, SyncMode, SyncRun,
-    SyncState, SyncStats, SyncStatus, SyncSummary, TrashedFileEntry,
+    CoreResult, CreatedFolderEntry, DriveScope, FileRecord, FullSnapshot, InventoryItem,
+    InventoryRepository, MovedFileEntry, PathEntry, PathState, PermissionRecord, RevokedShareEntry,
+    SyncMode, SyncRun, SyncState, SyncStats, SyncStatus, SyncSummary, TrashedFileEntry,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -753,8 +753,8 @@ impl InventoryRepository for SqliteInventoryRepository {
             .map_err(|error| CoreError::Message(error.to_string()))?;
         connection
             .execute(
-                "INSERT INTO moved_file_history (moved_at, command, status, file_id, file_name, file_path, mime_type, from_parent_ids_json, from_path, to_parent_id, to_path, move_via, note)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                "INSERT INTO moved_file_history (moved_at, command, status, file_id, file_name, file_path, mime_type, from_parent_ids_json, from_path, to_parent_id, to_path, move_via, note, moved_via_file_id, moved_via_path, explicitly_requested)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     entry.at.to_rfc3339(),
                     &entry.command,
@@ -769,6 +769,9 @@ impl InventoryRepository for SqliteInventoryRepository {
                     &entry.to_path,
                     &entry.move_via,
                     &entry.note,
+                    &entry.moved_via_file_id,
+                    &entry.moved_via_path,
+                    i64::from(entry.explicitly_requested),
                 ],
             )
             .map_err(|error| CoreError::Message(error.to_string()))?;
@@ -779,7 +782,7 @@ impl InventoryRepository for SqliteInventoryRepository {
         let connection = self.open_connection()?;
         let mut statement = connection
             .prepare(
-                "SELECT moved_at, command, status, file_id, file_name, file_path, mime_type, from_parent_ids_json, from_path, to_parent_id, to_path, move_via, note FROM moved_file_history ORDER BY id",
+                "SELECT moved_at, command, status, file_id, file_name, file_path, mime_type, from_parent_ids_json, from_path, to_parent_id, to_path, move_via, note, moved_via_file_id, moved_via_path, explicitly_requested FROM moved_file_history ORDER BY id",
             )
             .map_err(|error| CoreError::Message(error.to_string()))?;
         let rows = statement
@@ -798,6 +801,9 @@ impl InventoryRepository for SqliteInventoryRepository {
                     row.get::<_, String>(10)?,
                     row.get::<_, String>(11)?,
                     row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
+                    row.get::<_, i64>(15)?,
                 ))
             })
             .map_err(|error| CoreError::Message(error.to_string()))?;
@@ -817,6 +823,9 @@ impl InventoryRepository for SqliteInventoryRepository {
                 to_path,
                 move_via,
                 note,
+                moved_via_file_id,
+                moved_via_path,
+                explicitly_requested,
             ) = row.map_err(|error| CoreError::Message(error.to_string()))?;
             entries.push(MovedFileEntry {
                 at: parse_datetime(&moved_at)?,
@@ -831,6 +840,89 @@ impl InventoryRepository for SqliteInventoryRepository {
                 to_parent_id,
                 to_path,
                 move_via,
+                note,
+                moved_via_file_id,
+                moved_via_path,
+                explicitly_requested: explicitly_requested != 0,
+            });
+        }
+        Ok(entries)
+    }
+
+    fn append_created_folder(&self, entry: &CreatedFolderEntry) -> CoreResult<()> {
+        let connection = self.open_connection()?;
+        connection
+            .execute(
+                "INSERT INTO created_folder_history (created_at, command, status, folder_id, folder_name, folder_path, parent_id, parent_path, provision_path, create_via, note)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    entry.at.to_rfc3339(),
+                    &entry.command,
+                    &entry.status,
+                    &entry.folder_id,
+                    &entry.folder_name,
+                    &entry.folder_path,
+                    &entry.parent_id,
+                    &entry.parent_path,
+                    &entry.provision_path,
+                    &entry.create_via,
+                    &entry.note,
+                ],
+            )
+            .map_err(|error| CoreError::Message(error.to_string()))?;
+        Ok(())
+    }
+
+    fn load_created_folders(&self) -> CoreResult<Vec<CreatedFolderEntry>> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT created_at, command, status, folder_id, folder_name, folder_path, parent_id, parent_path, provision_path, create_via, note FROM created_folder_history ORDER BY id",
+            )
+            .map_err(|error| CoreError::Message(error.to_string()))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                ))
+            })
+            .map_err(|error| CoreError::Message(error.to_string()))?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (
+                created_at,
+                command,
+                status,
+                folder_id,
+                folder_name,
+                folder_path,
+                parent_id,
+                parent_path,
+                provision_path,
+                create_via,
+                note,
+            ) = row.map_err(|error| CoreError::Message(error.to_string()))?;
+            entries.push(CreatedFolderEntry {
+                at: parse_datetime(&created_at)?,
+                command,
+                status,
+                folder_id,
+                folder_name,
+                folder_path,
+                parent_id,
+                parent_path,
+                provision_path,
+                create_via,
                 note,
             });
         }

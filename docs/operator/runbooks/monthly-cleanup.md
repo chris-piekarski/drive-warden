@@ -71,6 +71,7 @@ Use `--recursive` only after reviewing folder rows and descendant counts.
 ```bash
 cargo run -p drive-warden -- unshare --shared-with anyone --apply --yes
 cargo run -p drive-warden -- move --path '[orphan]/eBooks/*' --to-path '/Archive/eBooks' --apply --yes
+cargo run -p drive-warden -- move --path '[orphan]/eBooks/*' --to-path '/Archive/eBooks/NewShelf' --provision-missing --apply --yes
 cargo run -p drive-warden -- trash --path '[orphan]/Coors/Model/*' --recursive --apply --yes
 ```
 
@@ -84,6 +85,7 @@ Move apply writes durable pending/applied rows to `moved_file_history` and runs 
 
 - rerun `find shared` with the same filter you used during preview
 - rerun the same `trash` dry run and confirm moved items no longer appear in the local snapshot
+- run `move-history --only-pending` if any move cleanup was applied
 - run `trash-status --within-days 7` and `trash-history --only-pending` if any trash cleanup was applied
 - run `trash-restore --path-contains <path-fragment>` when an operator needs manual restore steps
 - regenerate `report sharing`

@@ -74,7 +74,16 @@ struct MockMutationState {
     #[serde(default)]
     trashed_file_ids: Vec<String>,
     #[serde(default)]
+    parent_moves: Vec<ParentMove>,
+    #[serde(default)]
     remote_files: Vec<MockRemoteFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ParentMove {
+    file_id: String,
+    add_parent_id: String,
+    remove_parent_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,12 +268,14 @@ impl MockDriveGateway {
         for page in fixture.file_pages.values_mut() {
             for file in &mut page.files {
                 apply_deleted_permissions(file, &deletions);
+                apply_parent_moves(file, &state.parent_moves);
             }
             page.files.retain(|file| !state.trashed_file_ids.contains(&file.id));
         }
         for page in fixture.change_pages.values_mut() {
             for file in &mut page.updated_files {
                 apply_deleted_permissions(file, &deletions);
+                apply_parent_moves(file, &state.parent_moves);
             }
             page.updated_files.retain(|file| !state.trashed_file_ids.contains(&file.id));
         }
@@ -274,14 +285,22 @@ impl MockDriveGateway {
                     .created_files
                     .iter()
                     .filter(|file| !state.trashed_file_ids.contains(&file.id))
-                    .cloned(),
+                    .cloned()
+                    .map(|mut file| {
+                        apply_parent_moves(&mut file, &state.parent_moves);
+                        file
+                    }),
             );
             first_page.files.extend(
                 state
                     .remote_files
                     .iter()
                     .map(|file| file.metadata.clone())
-                    .filter(|file| !state.trashed_file_ids.contains(&file.id)),
+                    .filter(|file| !state.trashed_file_ids.contains(&file.id))
+                    .map(|mut file| {
+                        apply_parent_moves(&mut file, &state.parent_moves);
+                        file
+                    }),
             );
         }
         Ok(fixture)
@@ -693,6 +712,50 @@ impl DriveGateway for MockDriveGateway {
         Err(CoreError::Message(format!("mock remote file `{file_id}` was not found")))
     }
 
+    async fn move_file(
+        &self,
+        file_id: &str,
+        add_parent_id: &str,
+        remove_parent_ids: &[String],
+    ) -> CoreResult<RemoteFileMetadata> {
+        self.ensure_scope(DriveScope::Drive).await?;
+        let fixture = self.fixture()?;
+        let mut state = self.load_mutation_state()?;
+        if !Self::parent_exists_in_fixture_or_state(&fixture, &state, add_parent_id) {
+            return Err(CoreError::Message(format!(
+                "mock destination folder `{add_parent_id}` was not found"
+            )));
+        }
+        let Some(mut file) = fixture
+            .file_pages
+            .values()
+            .flat_map(|page| page.files.iter())
+            .chain(fixture.change_pages.values().flat_map(|page| page.updated_files.iter()))
+            .find(|file| file.id == file_id)
+            .cloned()
+        else {
+            return Err(CoreError::Message(format!("mock file `{file_id}` was not found")));
+        };
+        if let Some(parent_id) = remove_parent_ids
+            .iter()
+            .find(|parent_id| !file.parents.iter().any(|parent| parent == *parent_id))
+        {
+            return Err(CoreError::Message(format!(
+                "mock file `{file_id}` does not currently have parent `{parent_id}`"
+            )));
+        }
+
+        let parent_move = ParentMove {
+            file_id: file_id.to_string(),
+            add_parent_id: add_parent_id.to_string(),
+            remove_parent_ids: remove_parent_ids.to_vec(),
+        };
+        state.parent_moves.push(parent_move.clone());
+        self.store_mutation_state(&state)?;
+        apply_parent_moves(&mut file, &[parent_move]);
+        Ok(RemoteFileMetadata::from(file))
+    }
+
     async fn download_file(&self, file_id: &str) -> CoreResult<Vec<u8>> {
         self.ensure_scope(DriveScope::DriveReadonly).await?;
         let state = self.load_mutation_state()?;
@@ -734,6 +797,16 @@ fn apply_deleted_permissions(file: &mut FileRecord, deletions: &[DeletedPermissi
     });
     if before != file.permissions.len() {
         file.shared = !file.permissions.is_empty();
+    }
+}
+
+fn apply_parent_moves(file: &mut FileRecord, moves: &[ParentMove]) {
+    for parent_move in moves.iter().filter(|parent_move| parent_move.file_id == file.id) {
+        file.parents.retain(|parent| !parent_move.remove_parent_ids.contains(parent));
+        if !file.parents.iter().any(|parent| parent == &parent_move.add_parent_id) {
+            file.parents.push(parent_move.add_parent_id.clone());
+        }
+        file.modified_time = Some(Utc::now());
     }
 }
 

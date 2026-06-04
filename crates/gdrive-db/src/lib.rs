@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use gdrive_core::{
     build_inventory_items, build_path_entries, AccountProfile, AuditLogEntry, CoreError,
     CoreResult, DriveScope, FileRecord, FullSnapshot, InventoryItem, InventoryRepository,
-    PathEntry, PathState, PermissionRecord, RevokedShareEntry, SyncMode, SyncRun, SyncState,
-    SyncStats, SyncStatus, SyncSummary, TrashedFileEntry,
+    MovedFileEntry, PathEntry, PathState, PermissionRecord, RevokedShareEntry, SyncMode, SyncRun,
+    SyncState, SyncStats, SyncStatus, SyncSummary, TrashedFileEntry,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -741,6 +741,96 @@ impl InventoryRepository for SqliteInventoryRepository {
                 descendant_file_count: descendant_file_count as usize,
                 descendant_folder_count: descendant_folder_count as usize,
                 trash_via,
+                note,
+            });
+        }
+        Ok(entries)
+    }
+
+    fn append_moved_file(&self, entry: &MovedFileEntry) -> CoreResult<()> {
+        let connection = self.open_connection()?;
+        let from_parent_ids_json = serde_json::to_string(&entry.from_parent_ids)
+            .map_err(|error| CoreError::Message(error.to_string()))?;
+        connection
+            .execute(
+                "INSERT INTO moved_file_history (moved_at, command, status, file_id, file_name, file_path, mime_type, from_parent_ids_json, from_path, to_parent_id, to_path, move_via, note)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    entry.at.to_rfc3339(),
+                    &entry.command,
+                    &entry.status,
+                    &entry.file_id,
+                    &entry.file_name,
+                    &entry.file_path,
+                    &entry.mime_type,
+                    &from_parent_ids_json,
+                    &entry.from_path,
+                    &entry.to_parent_id,
+                    &entry.to_path,
+                    &entry.move_via,
+                    &entry.note,
+                ],
+            )
+            .map_err(|error| CoreError::Message(error.to_string()))?;
+        Ok(())
+    }
+
+    fn load_moved_files(&self) -> CoreResult<Vec<MovedFileEntry>> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT moved_at, command, status, file_id, file_name, file_path, mime_type, from_parent_ids_json, from_path, to_parent_id, to_path, move_via, note FROM moved_file_history ORDER BY id",
+            )
+            .map_err(|error| CoreError::Message(error.to_string()))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                ))
+            })
+            .map_err(|error| CoreError::Message(error.to_string()))?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (
+                moved_at,
+                command,
+                status,
+                file_id,
+                file_name,
+                file_path,
+                mime_type,
+                from_parent_ids_json,
+                from_path,
+                to_parent_id,
+                to_path,
+                move_via,
+                note,
+            ) = row.map_err(|error| CoreError::Message(error.to_string()))?;
+            entries.push(MovedFileEntry {
+                at: parse_datetime(&moved_at)?,
+                command,
+                status,
+                file_id,
+                file_name,
+                file_path,
+                mime_type,
+                from_parent_ids: serde_json::from_str(&from_parent_ids_json)?,
+                from_path,
+                to_parent_id,
+                to_path,
+                move_via,
                 note,
             });
         }

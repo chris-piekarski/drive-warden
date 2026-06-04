@@ -4,7 +4,7 @@ Use this runbook for a repeatable monthly review of stale files, duplicate stora
 
 ## Goal
 
-Refresh the local snapshot, generate a report pack, review large/stale items, and preview any obvious trash or sharing remediations before applying them.
+Refresh the local snapshot, generate a report pack, review large/stale items, preview organization moves, and preview any obvious trash or sharing remediations before applying them.
 
 ## Recommended sequence
 
@@ -44,7 +44,13 @@ cargo run -p drive-warden -- unshare --shared
 cargo run -p drive-warden -- inspect file <file-id>
 ```
 
-7. Preview recoverable trash cleanup for stale build artifacts.
+7. Preview organization moves into existing folders.
+
+```bash
+cargo run -p drive-warden -- move --path '[orphan]/eBooks/*' --to-path '/Archive/eBooks'
+```
+
+8. Preview recoverable trash cleanup for stale build artifacts.
 
 ```bash
 cargo run -p drive-warden -- trash --path '[orphan]/Coors/Model/*'
@@ -64,14 +70,15 @@ Use `--recursive` only after reviewing folder rows and descendant counts.
 
 ```bash
 cargo run -p drive-warden -- unshare --shared-with anyone --apply --yes
+cargo run -p drive-warden -- move --path '[orphan]/eBooks/*' --to-path '/Archive/eBooks' --apply --yes
 cargo run -p drive-warden -- trash --path '[orphan]/Coors/Model/*' --recursive --apply --yes
 ```
 
 The CLI performs a follow-up sync after a successful apply so reports and follow-up queries reflect the new state.
 
-Before any live `trash --apply` or `unshare --apply` mutation, the CLI creates a named remote DB release. Confirm the output includes `pre-mutation release:`; if the release fails, the mutation is refused.
+Before any live `trash --apply`, `unshare --apply`, or `move --apply` mutation, the CLI creates a named remote DB release. Confirm the output includes `pre-mutation release:`; if the release fails, the mutation is refused.
 
-Trash apply writes durable rows to `trashed_file_history` before the follow-up sync removes trashed items from the active inventory. For recursive folder trash, the history table includes both explicitly requested folders/files and all descendants from the pre-trash snapshot, with an estimated `recoverable_until` timestamp.
+Move apply writes durable pending/applied rows to `moved_file_history` and runs a follow-up full sync so child paths reflect moved folders. Trash apply writes durable rows to `trashed_file_history` before the follow-up sync removes trashed items from the active inventory. For recursive folder trash, the history table includes both explicitly requested folders/files and all descendants from the pre-trash snapshot, with an estimated `recoverable_until` timestamp.
 
 ## Verification
 

@@ -11,6 +11,7 @@ struct TestRepository {
     audit_log: Arc<Mutex<Vec<AuditLogEntry>>>,
     revoked_shares: Arc<Mutex<Vec<RevokedShareEntry>>>,
     trashed_files: Arc<Mutex<Vec<TrashedFileEntry>>>,
+    moved_files: Arc<Mutex<Vec<MovedFileEntry>>>,
 }
 
 impl InventoryRepository for TestRepository {
@@ -55,6 +56,15 @@ impl InventoryRepository for TestRepository {
 
     fn load_trashed_files(&self) -> CoreResult<Vec<TrashedFileEntry>> {
         Ok(self.trashed_files.lock().expect("trashed").clone())
+    }
+
+    fn append_moved_file(&self, entry: &MovedFileEntry) -> CoreResult<()> {
+        self.moved_files.lock().expect("moved").push(entry.clone());
+        Ok(())
+    }
+
+    fn load_moved_files(&self) -> CoreResult<Vec<MovedFileEntry>> {
+        Ok(self.moved_files.lock().expect("moved").clone())
     }
 
     fn begin_sync_run(
@@ -107,6 +117,8 @@ impl InventoryRepository for TestRepository {
     }
 }
 
+type MovedFileCall = (String, String, Vec<String>);
+
 #[derive(Default, Clone)]
 struct TestGateway {
     file_pages: Vec<FileListPage>,
@@ -114,6 +126,7 @@ struct TestGateway {
     session: Option<AuthSession>,
     deleted_permissions: Arc<Mutex<Vec<(String, String)>>>,
     trashed_files: Arc<Mutex<Vec<String>>>,
+    moved_files: Arc<Mutex<Vec<MovedFileCall>>>,
 }
 
 #[async_trait]
@@ -217,6 +230,29 @@ impl DriveGateway for TestGateway {
     async fn trash_file(&self, file_id: &str) -> CoreResult<()> {
         self.trashed_files.lock().expect("trashed files").push(file_id.to_string());
         Ok(())
+    }
+
+    async fn move_file(
+        &self,
+        file_id: &str,
+        add_parent_id: &str,
+        remove_parent_ids: &[String],
+    ) -> CoreResult<RemoteFileMetadata> {
+        self.moved_files.lock().expect("moved files").push((
+            file_id.to_string(),
+            add_parent_id.to_string(),
+            remove_parent_ids.to_vec(),
+        ));
+        Ok(RemoteFileMetadata {
+            id: file_id.to_string(),
+            name: file_id.to_string(),
+            mime_type: "text/plain".into(),
+            size: None,
+            modified_time: None,
+            owned_by_me: true,
+            shared: false,
+            permissions: Vec::new(),
+        })
     }
 }
 
@@ -903,6 +939,125 @@ fn trash_plan_and_apply_respect_recursive_and_actionable_guards() {
     assert!(!child_entry.explicitly_requested);
     assert_eq!(child_entry.trashed_via_file_id.as_deref(), Some("folder"));
     assert_eq!(child_entry.trashed_via_path.as_deref(), Some("/Model"));
+}
+
+#[test]
+fn move_plan_and_apply_record_pending_and_applied_history() {
+    let repository = TestRepository::default();
+    *repository.state.lock().expect("state") = Some(sample_state());
+    *repository.snapshot.lock().expect("snapshot") = FullSnapshot {
+        files: vec![
+            FileRecord {
+                id: "docs".into(),
+                name: "Docs".into(),
+                mime_type: GOOGLE_DRIVE_FOLDER_MIME.into(),
+                parents: vec!["root".into()],
+                owned_by_me: true,
+                operator_can_share_manage: true,
+                ..FileRecord::default()
+            },
+            FileRecord {
+                id: "archive".into(),
+                name: "Archive".into(),
+                mime_type: GOOGLE_DRIVE_FOLDER_MIME.into(),
+                parents: vec!["root".into()],
+                owned_by_me: true,
+                operator_can_share_manage: true,
+                ..FileRecord::default()
+            },
+            FileRecord {
+                id: "nested".into(),
+                name: "Nested".into(),
+                mime_type: GOOGLE_DRIVE_FOLDER_MIME.into(),
+                parents: vec!["docs".into()],
+                owned_by_me: true,
+                operator_can_share_manage: true,
+                ..FileRecord::default()
+            },
+            FileRecord {
+                id: "report".into(),
+                name: "Report.txt".into(),
+                mime_type: "text/plain".into(),
+                parents: vec!["docs".into()],
+                owned_by_me: true,
+                operator_can_share_manage: true,
+                ..FileRecord::default()
+            },
+            FileRecord {
+                id: "rootless".into(),
+                name: "Loose.txt".into(),
+                mime_type: "text/plain".into(),
+                parents: Vec::new(),
+                owned_by_me: true,
+                operator_can_share_manage: true,
+                ..FileRecord::default()
+            },
+        ],
+    };
+
+    let actionable = move_plan(
+        &repository,
+        &InventoryQuery { file_id: Some("report".into()), ..InventoryQuery::default() },
+        "archive",
+    )
+    .expect("move plan");
+    assert_eq!(actionable.actionable_count, 1);
+    assert_eq!(actionable.rows[0].reason, MoveReasonCode::Actionable);
+    assert_eq!(actionable.rows[0].from_parent_ids, ["docs"]);
+    assert_eq!(actionable.rows[0].to_parent_id, "archive");
+
+    let current_parent = move_plan(
+        &repository,
+        &InventoryQuery { file_id: Some("report".into()), ..InventoryQuery::default() },
+        "docs",
+    )
+    .expect("current parent plan");
+    assert_eq!(current_parent.rows[0].reason, MoveReasonCode::DestinationIsCurrentParent);
+
+    let missing_parent = move_plan(
+        &repository,
+        &InventoryQuery { file_id: Some("rootless".into()), ..InventoryQuery::default() },
+        "archive",
+    )
+    .expect("missing parent plan");
+    assert_eq!(missing_parent.rows[0].reason, MoveReasonCode::MissingParents);
+
+    let into_descendant = move_plan(
+        &repository,
+        &InventoryQuery { file_id: Some("docs".into()), ..InventoryQuery::default() },
+        "nested",
+    )
+    .expect("descendant plan");
+    assert_eq!(into_descendant.rows[0].reason, MoveReasonCode::DestinationInsideSourceSubtree);
+
+    let gateway = TestGateway::default();
+    let summary = tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(apply_move(
+            &gateway,
+            &repository,
+            &InventoryQuery { file_id: Some("report".into()), ..InventoryQuery::default() },
+            "archive",
+            "move",
+        ))
+        .expect("apply move");
+    assert_eq!(summary.applied, 1);
+    assert_eq!(
+        gateway.moved_files.lock().expect("moved files").as_slice(),
+        [("report".into(), "archive".into(), vec!["docs".into()])]
+    );
+    let audit = repository.load_audit_log().expect("audit");
+    assert_eq!(audit.len(), 2);
+    assert_eq!(audit[0].action, "move_file_pending");
+    assert_eq!(audit[1].action, "move_file");
+    let history = repository.load_moved_files().expect("move history");
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].status, "pending");
+    assert_eq!(history[1].status, "applied");
+    assert_eq!(history[1].from_parent_ids, ["docs"]);
+    assert_eq!(history[1].to_parent_id, "archive");
+    assert_eq!(history[1].from_path, "/Docs/Report.txt");
+    assert_eq!(history[1].to_path, "/Archive");
 }
 
 #[test]

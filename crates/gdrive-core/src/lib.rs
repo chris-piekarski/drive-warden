@@ -457,6 +457,7 @@ pub enum SharedWithFilter {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InventoryQuery {
+    pub file_id: Option<String>,
     pub name_contains: Option<String>,
     pub mime_contains: Option<String>,
     pub older_than_days: Option<i64>,
@@ -475,6 +476,7 @@ pub struct InventoryQuery {
 impl Default for InventoryQuery {
     fn default() -> Self {
         Self {
+            file_id: None,
             name_contains: None,
             mime_contains: None,
             older_than_days: None,
@@ -634,6 +636,37 @@ impl TrashReasonCode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MoveReasonCode {
+    Actionable,
+    SourceTrashed,
+    DestinationTrashed,
+    DestinationNotFolder,
+    DestinationNotOwnedOrManageable,
+    NotOwnedOrManageable,
+    MissingParents,
+    DestinationIsCurrentParent,
+    DestinationIsSelf,
+    DestinationInsideSourceSubtree,
+}
+
+impl MoveReasonCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Actionable => "actionable",
+            Self::SourceTrashed => "source_trashed",
+            Self::DestinationTrashed => "destination_trashed",
+            Self::DestinationNotFolder => "destination_not_folder",
+            Self::DestinationNotOwnedOrManageable => "destination_not_owned_or_manageable",
+            Self::NotOwnedOrManageable => "not_owned_or_manageable",
+            Self::MissingParents => "missing_parents",
+            Self::DestinationIsCurrentParent => "destination_is_current_parent",
+            Self::DestinationIsSelf => "destination_is_self",
+            Self::DestinationInsideSourceSubtree => "destination_inside_source_subtree",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnsharePreviewRow {
     pub item: InventoryItem,
@@ -737,6 +770,40 @@ pub struct TrashApplySummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveDestination {
+    pub folder: InventoryItem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MovePreviewRow {
+    pub item: InventoryItem,
+    pub reason: MoveReasonCode,
+    pub actionable: bool,
+    pub from_parent_ids: Vec<String>,
+    pub to_parent_id: String,
+    pub to_path: String,
+    pub descendant_file_count: usize,
+    pub descendant_folder_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MovePlan {
+    pub rows: Vec<MovePreviewRow>,
+    pub destination: Option<MoveDestination>,
+    pub actionable_count: usize,
+    pub skipped_count: usize,
+    pub file_count: usize,
+    pub folder_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveApplySummary {
+    pub planned: usize,
+    pub applied: usize,
+    pub skipped: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditLogEntry {
     pub at: DateTime<Utc>,
     pub command: String,
@@ -806,6 +873,29 @@ pub struct TrashedFileEntry {
     pub descendant_file_count: usize,
     pub descendant_folder_count: usize,
     pub trash_via: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Append-only snapshot of a file or folder parent change.
+///
+/// History rows are written before and after each live Drive mutation so the
+/// original location remains auditable after a follow-up sync rewrites inventory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MovedFileEntry {
+    pub at: DateTime<Utc>,
+    pub command: String,
+    pub status: String,
+    pub file_id: String,
+    pub file_name: String,
+    pub file_path: String,
+    pub mime_type: String,
+    #[serde(default)]
+    pub from_parent_ids: Vec<String>,
+    pub from_path: String,
+    pub to_parent_id: String,
+    pub to_path: String,
+    pub move_via: String,
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -902,6 +992,17 @@ pub trait DriveGateway: Send + Sync {
             "remote file rename is not supported by this Drive backend for `{file_id}` -> `{new_name}`"
         )))
     }
+    async fn move_file(
+        &self,
+        file_id: &str,
+        add_parent_id: &str,
+        remove_parent_ids: &[String],
+    ) -> CoreResult<RemoteFileMetadata> {
+        Err(CoreError::Message(format!(
+            "remote file move is not supported by this Drive backend for `{file_id}` -> `{add_parent_id}` removing [{}]",
+            remove_parent_ids.join(",")
+        )))
+    }
     async fn download_file(&self, file_id: &str) -> CoreResult<Vec<u8>> {
         Err(CoreError::Message(format!(
             "remote file download is not supported by this Drive backend for `{file_id}`"
@@ -933,6 +1034,13 @@ pub trait InventoryRepository: Send + Sync {
         Ok(())
     }
     fn load_trashed_files(&self) -> CoreResult<Vec<TrashedFileEntry>> {
+        Ok(Vec::new())
+    }
+    fn append_moved_file(&self, entry: &MovedFileEntry) -> CoreResult<()> {
+        let _ = entry;
+        Ok(())
+    }
+    fn load_moved_files(&self) -> CoreResult<Vec<MovedFileEntry>> {
         Ok(Vec::new())
     }
     fn begin_sync_run(
@@ -1213,6 +1321,214 @@ where
         skipped: plan.rows.len().saturating_sub(applied),
         retain_copy,
     })
+}
+
+pub fn move_plan<R: InventoryRepository + ?Sized>(
+    repository: &R,
+    query: &InventoryQuery,
+    destination_folder_id: &str,
+) -> CoreResult<MovePlan> {
+    let items = repository.load_inventory_items()?;
+    let selected_items = apply_inventory_query(items.clone(), query);
+    build_move_plan(&items, selected_items, destination_folder_id)
+}
+
+pub async fn apply_move<G, R>(
+    gateway: &G,
+    repository: &R,
+    query: &InventoryQuery,
+    destination_folder_id: &str,
+    command: &str,
+) -> CoreResult<MoveApplySummary>
+where
+    G: DriveGateway + ?Sized,
+    R: InventoryRepository + ?Sized,
+{
+    ensure_committed_snapshot(repository)?;
+    let plan = move_plan(repository, query, destination_folder_id)?;
+    if plan.actionable_count == 0 {
+        return Ok(MoveApplySummary {
+            planned: plan.rows.len(),
+            applied: 0,
+            skipped: plan.rows.len(),
+        });
+    }
+
+    gateway.ensure_scope(DriveScope::Drive).await?;
+    let mut applied = 0usize;
+    for row in &plan.rows {
+        if !row.actionable {
+            continue;
+        }
+
+        let pending_at = Utc::now();
+        repository.append_audit_log(&AuditLogEntry {
+            at: pending_at,
+            command: command.to_string(),
+            action: "move_file_pending".into(),
+            file_id: row.item.file.id.clone(),
+            permission_id: String::new(),
+            target_label: row.to_path.clone(),
+            dry_run: false,
+            source_file_id: Some(row.from_parent_ids.join(",")),
+            backup_file_id: Some(row.to_parent_id.clone()),
+        })?;
+        repository.append_moved_file(&build_moved_file_entry(
+            row, pending_at, command, "pending", None,
+        ))?;
+        gateway.move_file(&row.item.file.id, &row.to_parent_id, &row.from_parent_ids).await?;
+
+        let applied_at = Utc::now();
+        repository.append_audit_log(&AuditLogEntry {
+            at: applied_at,
+            command: command.to_string(),
+            action: "move_file".into(),
+            file_id: row.item.file.id.clone(),
+            permission_id: String::new(),
+            target_label: row.to_path.clone(),
+            dry_run: false,
+            source_file_id: Some(row.from_parent_ids.join(",")),
+            backup_file_id: Some(row.to_parent_id.clone()),
+        })?;
+        repository.append_moved_file(&build_moved_file_entry(
+            row, applied_at, command, "applied", None,
+        ))?;
+        applied += 1;
+    }
+
+    Ok(MoveApplySummary {
+        planned: plan.rows.len(),
+        applied,
+        skipped: plan.rows.len().saturating_sub(applied),
+    })
+}
+
+fn build_move_plan(
+    all_items: &[InventoryItem],
+    selected_items: Vec<InventoryItem>,
+    destination_folder_id: &str,
+) -> CoreResult<MovePlan> {
+    let items_by_id = all_items
+        .iter()
+        .cloned()
+        .map(|item| (item.file.id.clone(), item))
+        .collect::<HashMap<_, _>>();
+    let Some(destination) = items_by_id.get(destination_folder_id).cloned() else {
+        return Err(CoreError::Message(format!(
+            "destination folder `{destination_folder_id}` was not found in the local snapshot"
+        )));
+    };
+    let children_by_parent = build_children_by_parent(all_items);
+    let selected_ids =
+        selected_items.iter().map(|item| item.file.id.clone()).collect::<BTreeSet<_>>();
+    let suppressed_descendants = selected_items
+        .iter()
+        .filter(|item| item.file.mime_type == GOOGLE_DRIVE_FOLDER_MIME)
+        .flat_map(|item| {
+            collect_subtree_ids(&item.file.id, &children_by_parent)
+                .into_iter()
+                .filter(|id| id != &item.file.id)
+                .collect::<Vec<_>>()
+        })
+        .filter(|id| selected_ids.contains(id))
+        .collect::<BTreeSet<_>>();
+
+    let mut plan = MovePlan {
+        destination: Some(MoveDestination { folder: destination.clone() }),
+        ..MovePlan::default()
+    };
+    for item in selected_items {
+        if suppressed_descendants.contains(&item.file.id) {
+            continue;
+        }
+
+        let is_folder = item.file.mime_type == GOOGLE_DRIVE_FOLDER_MIME;
+        let subtree_ids = if is_folder {
+            collect_subtree_ids(&item.file.id, &children_by_parent)
+        } else {
+            BTreeSet::new()
+        };
+        let (descendant_file_count, descendant_folder_count, _) =
+            count_descendants(&items_by_id, &subtree_ids, &item.file.id);
+        let reason = classify_move_reason(&item, &destination, &subtree_ids);
+        let actionable = matches!(reason, MoveReasonCode::Actionable);
+
+        if is_folder {
+            plan.folder_count += 1;
+        } else {
+            plan.file_count += 1;
+        }
+        if actionable {
+            plan.actionable_count += 1;
+        } else {
+            plan.skipped_count += 1;
+        }
+
+        plan.rows.push(MovePreviewRow {
+            from_parent_ids: item.file.parents.clone(),
+            to_parent_id: destination.file.id.clone(),
+            to_path: destination.path.primary_path.clone(),
+            item,
+            reason,
+            actionable,
+            descendant_file_count,
+            descendant_folder_count,
+        });
+    }
+
+    Ok(plan)
+}
+
+fn classify_move_reason(
+    item: &InventoryItem,
+    destination: &InventoryItem,
+    source_subtree_ids: &BTreeSet<String>,
+) -> MoveReasonCode {
+    if item.file.trashed {
+        MoveReasonCode::SourceTrashed
+    } else if destination.file.trashed {
+        MoveReasonCode::DestinationTrashed
+    } else if destination.file.mime_type != GOOGLE_DRIVE_FOLDER_MIME {
+        MoveReasonCode::DestinationNotFolder
+    } else if !destination.file.operator_can_share_manage {
+        MoveReasonCode::DestinationNotOwnedOrManageable
+    } else if !item.file.operator_can_share_manage {
+        MoveReasonCode::NotOwnedOrManageable
+    } else if item.file.parents.is_empty() {
+        MoveReasonCode::MissingParents
+    } else if item.file.parents.iter().any(|parent| parent == &destination.file.id) {
+        MoveReasonCode::DestinationIsCurrentParent
+    } else if item.file.id == destination.file.id {
+        MoveReasonCode::DestinationIsSelf
+    } else if source_subtree_ids.contains(&destination.file.id) {
+        MoveReasonCode::DestinationInsideSourceSubtree
+    } else {
+        MoveReasonCode::Actionable
+    }
+}
+
+fn build_moved_file_entry(
+    row: &MovePreviewRow,
+    at: DateTime<Utc>,
+    command: &str,
+    status: &str,
+    note: Option<String>,
+) -> MovedFileEntry {
+    MovedFileEntry {
+        at,
+        command: command.to_string(),
+        status: status.to_string(),
+        file_id: row.item.file.id.clone(),
+        file_name: row.item.file.name.clone(),
+        file_path: row.item.path.primary_path.clone(),
+        mime_type: row.item.file.mime_type.clone(),
+        from_parent_ids: row.from_parent_ids.clone(),
+        from_path: row.item.path.primary_path.clone(),
+        to_parent_id: row.to_parent_id.clone(),
+        to_path: row.to_path.clone(),
+        move_via: "tool".into(),
+        note,
+    }
 }
 
 pub fn trash_plan<R: InventoryRepository + ?Sized>(
@@ -2032,6 +2348,11 @@ fn apply_inventory_filters(
 }
 
 fn inventory_item_matches_query(item: &InventoryItem, query: &InventoryQuery) -> bool {
+    if let Some(file_id) = &query.file_id {
+        if item.file.id != *file_id {
+            return false;
+        }
+    }
     if matches!(query.owner_scope, OwnerScope::Mine) && !item.file.owned_by_me {
         return false;
     }

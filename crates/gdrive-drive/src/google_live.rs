@@ -474,6 +474,36 @@ impl DriveGateway for GoogleDriveGateway {
         Ok(RemoteFileMetadata::from(map_drive_file(file)?))
     }
 
+    async fn move_file(
+        &self,
+        file_id: &str,
+        add_parent_id: &str,
+        remove_parent_ids: &[String],
+    ) -> CoreResult<RemoteFileMetadata> {
+        let session = self.ensure_scope_internal(DriveScope::Drive).await?;
+        let hub = self.build_hub().await?;
+        let request = GoogleFile::default();
+        let remove_parents = remove_parent_ids.join(",");
+        let context = format!("moving Google Drive file `{file_id}` into folder `{add_parent_id}`");
+        let (_, file) = google_request!(&context, {
+            hub.files()
+                .update(request.clone(), file_id)
+                .add_scopes(oauth_scope_urls(highest_active_scope(&session.active_scopes)))
+                .supports_all_drives(false)
+                .add_parents(add_parent_id)
+                .remove_parents(&remove_parents)
+                .param("fields", FILE_ITEM_FIELDS)
+                .upload(
+                    std::io::Cursor::new(Vec::<u8>::new()),
+                    "application/octet-stream"
+                        .parse()
+                        .expect("static octet-stream mime should parse"),
+                )
+                .await
+        })?;
+        Ok(RemoteFileMetadata::from(map_drive_file(file)?))
+    }
+
     async fn download_file(&self, file_id: &str) -> CoreResult<Vec<u8>> {
         let session = self.ensure_scope_internal(DriveScope::DriveReadonly).await?;
         let hub = self.build_hub().await?;

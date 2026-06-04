@@ -4,12 +4,12 @@ This file helps coding agents get productive in `drive-warden` without rereading
 
 ## Project Summary
 
-`drive-warden` is a Rust CLI for syncing Google Drive metadata into a local SQLite snapshot, auditing duplicates/sharing/storage, inspecting file metadata, safely applying guarded sharing or recoverable trash cleanup, and syncing the SQLite DB to a private visible My Drive folder. The live backend supports `My Drive`; Shared Drives, permanent delete/empty-trash workflows, multi-account profiles, and keyring storage are deferred.
+`drive-warden` is a Rust CLI for syncing Google Drive metadata into a local SQLite snapshot, auditing duplicates/sharing/storage, inspecting file metadata, safely applying guarded sharing, recoverable trash cleanup, or parent-change organization moves, and syncing the SQLite DB to a private visible My Drive folder. The live backend supports `My Drive`; Shared Drives, permanent delete/empty-trash workflows, multi-account profiles, and keyring storage are deferred.
 
 The project is local-first and safety-first:
 
 - Reports and find commands read only the last committed SQLite snapshot.
-- Live Google writes are behind explicit `unshare --apply` or `trash --apply` plus confirmation or `--yes`.
+- Live Google writes are behind explicit `unshare --apply`, `trash --apply`, or `move --apply` plus confirmation or `--yes`.
 - Mock fixtures are the primary offline regression surface.
 - Runtime data belongs under `data/`, `reports/`, `target/`, or temp dirs, not in source logic.
 
@@ -65,6 +65,7 @@ Important core ports:
 - `unshare --apply` must create a named remote DB release before any live mutation; if release creation fails, the permission delete must not run. It removes only actionable rows (`actionable` or `actionable_via_folder`) and records a pending audit row before each live permission delete plus final records in both `audit_log` and `revoked_share_history`. Folder-inherited grants are detected from the parent chain — Google omits the per-permission `inherited` flag for My Drive, so the synced flag is not trusted on its own — and are revoked by a single cascade delete at the operator-managed source folder, with each affected child recorded individually. Rows inherited from a folder the grantee owns are `grantee_owned_parent` (unrevokable until the item is moved out); `inherited_permission`, `not_actionable`, and `not_owned_or_manageable` rows remain visible in preview but are skipped.
 - Any permission removal — including out-of-band Drive API deletes for cases the tool cannot yet handle — must be recorded in `audit_log` and `revoked_share_history`. `sync` overwrites `files.permissions_json` with current state, so those two append-only tables are the only durable record of revoked access.
 - `trash` without `--apply` is preview-only. `trash --apply` must create a named remote DB release before any live mutation; if release creation fails, the trash call must not run. It moves actionable rows to Google Drive trash, never permanently deletes, requires a committed local sync snapshot, writes a pending audit row before the live trash call, and requires `--recursive` before folder rows become actionable.
+- `move` without `--apply` is preview-only. `move --apply` must create a named remote DB release before any live parent change; if release creation fails, the move must not run. It only moves into an existing destination folder selected by folder ID or exact synced path, requires a committed local sync snapshot, writes pending and applied rows to `moved_file_history`, and runs a full sync afterward so moved folder descendants get updated paths.
 - `trash-status` and `trash-history` read append-only `trashed_file_history`; status must warn on recoverability deadlines inside the configured window.
 - `trash-restore` is read-only guidance only; do not imply Drive restore mutation exists unless it is actually implemented and audited.
 - `doctor` is the read-only operator health check and should remain safe to run before destructive or remote decisions.
@@ -119,6 +120,7 @@ cargo test -p drive-warden --test cli_report_functional
 cargo test -p drive-warden --test cli_find_functional
 cargo test -p drive-warden --test cli_polish_functional
 cargo test -p drive-warden --test cli_unshare_functional
+cargo test -p drive-warden --test cli_move_functional
 cargo test -p drive-warden --test acceptance_mock_end_to_end
 ```
 
@@ -160,6 +162,7 @@ Functional and acceptance tests must use mock fixtures, not live Google.
 - Change sync behavior: update `gdrive-core` first, then SQLite repository behavior if persistence semantics change; add fake-gateway integration coverage and failure-path tests.
 - Change reports: update `gdrive-report`, report functional tests, and any checked-in generated report samples if they are intentionally kept current.
 - Change unshare/write behavior: update plan/apply code in `gdrive-core`, CLI guardrails in `drive-warden`, mock mutation behavior if needed (folder-grant deletes must cascade to inherited descendants), `audit_log` and `revoked_share_history` expectations, and non-interactive tests.
+- Change move/write behavior: update `MovePlan`/`apply_move` in `gdrive-core`, live and mock `DriveGateway::move_file`, CLI guardrails, `moved_file_history` expectations, and post-apply sync tests.
 - Change trash/write behavior: update `TrashPlan`/`apply_trash` in `gdrive-core`, live and mock `DriveGateway::trash_file`, CLI guardrails, audit expectations, and post-apply sync tests.
 - Change remote DB sync behavior: update core manifest/privacy models, live and mock remote file operations, CLI `db remote` guardrails, Make targets, manifest verification tests, and docs.
 

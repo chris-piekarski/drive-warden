@@ -1,0 +1,77 @@
+{
+  "account": {
+    "account_id": "mock-account-1",
+    "email": "mock@example.com",
+    "display_name": "Mock Operator"
+  },
+  "start_page_token": "move-start-token",
+  "file_pages": {
+    "__start__": {
+      "next_page_token": null,
+      "files": [
+        {
+          "id": "docs-folder",
+          "name": "Docs",
+          "mime_type": "application/vnd.google-apps.folder",
+          "parents": ["root"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true
+        },
+        {
+          "id": "archive-folder",
+          "name": "Archive",
+          "mime_type": "application/vnd.google-apps.folder",
+          "parents": ["root"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true
+        },
+        {
+          "id": "source-folder",
+          "name": "Project",
+          "mime_type": "application/vnd.google-apps.folder",
+          "parents": ["docs-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true
+        },
+        {
+          "id": "nested-file",
+          "name": "Plan.txt",
+          "mime_type": "text/plain",
+          "parents": ["source-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true,
+          "size": 128,
+          "modified_time": "2025-01-01T00:00:00Z"
+        },
+        {
+          "id": "loose-file",
+          "name": "Loose.txt",
+          "mime_type": "text/plain",
+          "parents": ["docs-folder"],
+          "trashed": false,
+          "owned_by_me": true,
+          "shared": false,
+          "operator_can_share_manage": true,
+          "size": 64,
+          "modified_time": "2025-01-02T00:00:00Z"
+        }
+      ]
+    }
+  },
+  "change_pages": {
+    "move-start-token": {
+      "next_page_token": null,
+      "new_start_page_token": "move-next-token",
+      "removed_file_ids": [],
+      "updated_files": []
+    }
+  }
+}

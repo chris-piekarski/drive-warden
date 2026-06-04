@@ -9,6 +9,7 @@
 - `find`, `report`, `inspect file`, and `inspect exif`
 - `unshare` preview plus guarded `unshare --apply`
 - `trash` preview plus guarded, recoverable `trash --apply`
+- `move` preview plus guarded parent changes into existing folders
 - local database inspection with `db stats` and `db vacuum`
 - remote SQLite push/pull with `db remote` and `make gdrive-sync`
 
@@ -67,10 +68,14 @@ cargo run -p drive-warden -- trash --path '[orphan]/Coors/Model/*' --recursive -
 cargo run -p drive-warden -- trash-status --within-days 7
 cargo run -p drive-warden -- trash-history --only-pending
 cargo run -p drive-warden -- trash-restore --path-contains '[orphan]/Coors/Model'
+cargo run -p drive-warden -- move --path '[orphan]/eBooks/*' --to-path '/Archive/eBooks'
+cargo run -p drive-warden -- move --file-id <file-id> --to-folder-id <folder-id> --apply --yes
 cargo run -p drive-warden -- doctor
 ```
 
-`trash --apply` and `unshare --apply` first create a named remote DB release such as `before-trash-...` or `before-unshare-...`. If that release cannot be created, the live Drive mutation is refused. `trash --apply` moves files or explicitly recursive folders to Google Drive trash. It does not permanently delete files or empty trash; use the Google Drive UI if you need to restore items during Google's recovery window.
+`trash --apply`, `unshare --apply`, and `move --apply` first create a named remote DB release such as `before-trash-...` or `before-unshare-...`. If that release cannot be created, the live Drive mutation is refused. `trash --apply` moves files or explicitly recursive folders to Google Drive trash. It does not permanently delete files or empty trash; use the Google Drive UI if you need to restore items during Google's recovery window.
+
+`move` requires the destination folder to already exist and be selected by exact synced path or folder ID. It records pending and applied rows in `moved_file_history`, then runs a full sync so paths reflect the new parent.
 
 Every applied trash move is recorded in the append-only `trashed_file_history` table. Recursive folder trash records descendant snapshots too, so operators can still see file IDs, paths, trash time, and estimated recovery deadlines after sync removes those items from the active `files` inventory.
 
@@ -140,6 +145,7 @@ Each database has a stable `db_instance_id` and remote sync generation stored in
 - `inspect exif` upgrades to `drive.readonly` if the current session is narrower
 - `unshare --apply` upgrades to `drive` if the current session is narrower
 - `trash --apply` upgrades to `drive` if the current session is narrower
+- `move --apply` upgrades to `drive` if the current session is narrower
 - `db remote push` upgrades to `drive`; `db remote pull` may upgrade to `drive.readonly`
 
 If the broader consent flow is declined, the narrower session remains on disk and the command fails safely.
@@ -168,7 +174,7 @@ cargo run -p drive-warden -- \
 ## Output modes
 
 - default output is a stable plain-text format for terminals
-- `--format json` emits machine-readable output for `find`, `inspect`, `unshare`, `trash`, and `db`
+- `--format json` emits machine-readable output for `find`, `inspect`, `unshare`, `trash`, `move`, and `db`
 - `--no-interactive` disables prompts that would block unattended automation
 - `report *` commands always write Markdown files to disk
 

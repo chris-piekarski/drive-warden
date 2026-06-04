@@ -1,7 +1,7 @@
 use chrono::Utc;
 use gdrive_core::{
     AccountProfile, AuditLogEntry, DriveScope, FileRecord, FullSnapshot, InventoryRepository,
-    RevokedShareEntry, SyncMode, SyncStats, SyncStatus,
+    MovedFileEntry, RevokedShareEntry, SyncMode, SyncStats, SyncStatus,
 };
 use gdrive_db::SqliteInventoryRepository;
 
@@ -39,6 +39,41 @@ fn repository_persists_revoked_share_history() {
     assert!(history[0].inherited);
     assert_eq!(history[0].source_folder_id.as_deref(), Some("team-folder"));
     assert_eq!(history[0].revoked_via, "tool");
+}
+
+#[test]
+fn repository_persists_moved_file_history() {
+    let temp_dir = tempfile::TempDir::new().expect("tempdir");
+    let repository =
+        SqliteInventoryRepository::new(temp_dir.path().join("inventory.db")).expect("repo");
+
+    assert!(repository.load_moved_files().expect("empty move history").is_empty());
+
+    repository
+        .append_moved_file(&MovedFileEntry {
+            at: Utc::now(),
+            command: "move".into(),
+            status: "applied".into(),
+            file_id: "doc-a".into(),
+            file_name: "A.txt".into(),
+            file_path: "/Docs/A.txt".into(),
+            mime_type: "text/plain".into(),
+            from_parent_ids: vec!["docs".into()],
+            from_path: "/Docs/A.txt".into(),
+            to_parent_id: "archive".into(),
+            to_path: "/Archive".into(),
+            move_via: "tool".into(),
+            note: Some("test note".into()),
+        })
+        .expect("append moved file");
+
+    let history = repository.load_moved_files().expect("move history");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].file_id, "doc-a");
+    assert_eq!(history[0].status, "applied");
+    assert_eq!(history[0].from_parent_ids, ["docs"]);
+    assert_eq!(history[0].to_parent_id, "archive");
+    assert_eq!(history[0].note.as_deref(), Some("test note"));
 }
 
 #[test]

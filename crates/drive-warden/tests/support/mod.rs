@@ -21,6 +21,7 @@ pub fn mock_auth_path(temp_dir: &TempDir) -> PathBuf {
     temp_dir.path().join("mock-auth.json")
 }
 
+#[allow(dead_code)]
 pub fn run_mock_command(temp_dir: &TempDir, args: &[&str]) -> Output {
     run_mock_command_with_config(temp_dir, Path::new("tests/config/mock.toml"), args)
 }

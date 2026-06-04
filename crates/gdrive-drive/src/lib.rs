@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use gdrive_core::{
-    AccountProfile, AuthSession, AuthStatus, ChangeListPage, CoreError, CoreResult, DriveGateway,
-    DriveScope, ExifSource, FileListPage, FileRecord, ImageMediaMetadata, InspectExifDetails,
-    PermissionRecord, RemoteFileMetadata, GOOGLE_DRIVE_FOLDER_MIME,
+    AccountAbout, AccountProfile, AuthSession, AuthStatus, ChangeListPage, CoreError, CoreResult,
+    DriveGateway, DriveScope, ExifSource, FileListPage, FileRecord, ImageMediaMetadata,
+    InspectExifDetails, PermissionRecord, RemoteFileMetadata, StorageQuota,
+    GOOGLE_DRIVE_FOLDER_MIME,
 };
 use google_drive3::api::{About, Change, ChangeList as GoogleChangeList, File as GoogleFile};
 use google_drive3::common;
@@ -18,6 +19,8 @@ const FILE_ITEM_FIELDS: &str = "id,name,mimeType,parents,trashed,ownedByMe,share
 const FILE_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,trashed,ownedByMe,shared,capabilities(canShare),size,md5Checksum,modifiedTime,viewedByMeTime,permissions(id,type,role,emailAddress,domain,allowFileDiscovery,displayName,deleted,pendingOwner,permissionDetails(inherited,inheritedFrom,permissionType,role)),webViewLink,quotaBytesUsed,imageMediaMetadata(width,height,cameraMake,cameraModel,time,exposureTime,aperture,focalLength,isoSpeed))";
 const CHANGE_FIELDS: &str = "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,parents,trashed,ownedByMe,shared,capabilities(canShare),size,md5Checksum,modifiedTime,viewedByMeTime,permissions(id,type,role,emailAddress,domain,allowFileDiscovery,displayName,deleted,pendingOwner,permissionDetails(inherited,inheritedFrom,permissionType,role)),webViewLink,quotaBytesUsed,imageMediaMetadata(width,height,cameraMake,cameraModel,time,exposureTime,aperture,focalLength,isoSpeed)))";
 const ABOUT_FIELDS: &str = "user(permissionId,emailAddress,displayName)";
+const ACCOUNT_ABOUT_FIELDS: &str =
+    "storageQuota,maxUploadSize,canCreateDrives,user(permissionId,emailAddress,displayName)";
 
 #[derive(Debug, Clone)]
 pub struct GoogleDriveGateway {
@@ -55,6 +58,8 @@ struct MockFixture {
     change_pages: BTreeMap<String, ChangeListPage>,
     #[serde(default)]
     failure_modes: MockFailureModes,
+    #[serde(default)]
+    account_about: Option<AccountAbout>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -768,6 +773,24 @@ impl DriveGateway for MockDriveGateway {
                 CoreError::Message(format!("mock remote file `{file_id}` was not found"))
             })
     }
+
+    async fn get_account_about(&self) -> CoreResult<AccountAbout> {
+        let fixture = self.fixture()?;
+        self.require_active_session()?;
+        self.validate_session(&fixture)?;
+        Ok(fixture.account_about.clone().unwrap_or_else(|| {
+            AccountAbout::from_quota(
+                StorageQuota {
+                    limit: Some(15_000_000_000),
+                    usage: 5_000_000_000,
+                    usage_in_drive: 4_500_000_000,
+                    usage_in_drive_trash: 100_000_000,
+                },
+                Some(5_368_709_120),
+                Some(false),
+            )
+        }))
+    }
 }
 
 fn read_session_file(path: &Path) -> CoreResult<Option<AuthSession>> {
@@ -942,6 +965,29 @@ fn account_from_about(about: About) -> CoreResult<AccountProfile> {
         CoreError::Message("Google Drive user profile did not include an email address".into())
     })?;
     Ok(AccountProfile { account_id, email, display_name: user.display_name })
+}
+
+fn storage_quota_from_about(about: &About) -> CoreResult<StorageQuota> {
+    let quota = about.storage_quota.as_ref().ok_or_else(|| {
+        CoreError::Message(
+            "Google Drive `about.get` did not include storageQuota for the current account".into(),
+        )
+    })?;
+    Ok(StorageQuota {
+        limit: quota.limit.map(|value| value as u64),
+        usage: quota.usage.unwrap_or(0) as u64,
+        usage_in_drive: quota.usage_in_drive.unwrap_or(0) as u64,
+        usage_in_drive_trash: quota.usage_in_drive_trash.unwrap_or(0) as u64,
+    })
+}
+
+fn account_about_from_about(about: About) -> CoreResult<AccountAbout> {
+    let quota = storage_quota_from_about(&about)?;
+    Ok(AccountAbout::from_quota(
+        quota,
+        about.max_upload_size.map(|value| value as u64),
+        about.can_create_drives,
+    ))
 }
 
 fn map_file_list(page: google_drive3::api::FileList) -> CoreResult<FileListPage> {

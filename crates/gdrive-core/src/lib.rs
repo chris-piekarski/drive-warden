@@ -562,6 +562,62 @@ pub struct StorageSummary {
     pub stale_threshold_days: i64,
 }
 
+/// Live Google account storage quota from `about.get` `storageQuota`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageQuota {
+    pub limit: Option<u64>,
+    pub usage: u64,
+    pub usage_in_drive: u64,
+    pub usage_in_drive_trash: u64,
+}
+
+impl StorageQuota {
+    pub fn free_bytes(&self) -> Option<u64> {
+        self.limit?.checked_sub(self.usage)
+    }
+}
+
+/// Live Google account settings from `about.get`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountAbout {
+    pub quota: StorageQuota,
+    pub max_upload_size: Option<u64>,
+    pub can_create_drives: Option<bool>,
+    pub active_drive_bytes: u64,
+    pub non_drive_bytes: u64,
+    pub trash_reclaimable_bytes: u64,
+}
+
+impl AccountAbout {
+    pub fn from_quota(
+        quota: StorageQuota,
+        max_upload_size: Option<u64>,
+        can_create_drives: Option<bool>,
+    ) -> Self {
+        let active_drive_bytes = quota.usage_in_drive.saturating_sub(quota.usage_in_drive_trash);
+        let non_drive_bytes = quota.usage.saturating_sub(quota.usage_in_drive);
+        let trash_reclaimable_bytes = quota.usage_in_drive_trash;
+        Self {
+            quota,
+            max_upload_size,
+            can_create_drives,
+            active_drive_bytes,
+            non_drive_bytes,
+            trash_reclaimable_bytes,
+        }
+    }
+
+    pub fn trash_pct_of_limit(&self) -> Option<f64> {
+        self.quota.limit.map(|limit| {
+            if limit == 0 {
+                0.0
+            } else {
+                (self.trash_reclaimable_bytes as f64 / limit as f64) * 100.0
+            }
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InspectFileDetails {
     pub item: InventoryItem,
@@ -1083,6 +1139,11 @@ pub trait DriveGateway: Send + Sync {
         Err(CoreError::Message(format!(
             "remote file download is not supported by this Drive backend for `{file_id}`"
         )))
+    }
+    async fn get_account_about(&self) -> CoreResult<AccountAbout> {
+        Err(CoreError::Message(
+            "account about settings are not supported by this Drive backend".into(),
+        ))
     }
 }
 
@@ -2868,6 +2929,7 @@ pub fn build_path_entries(snapshot: &FullSnapshot) -> Vec<PathEntry> {
         .cloned()
         .map(|file| (file.id.clone(), file))
         .collect::<BTreeMap<_, _>>();
+    let root_aliases = infer_root_parent_aliases(snapshot, &files);
     let mut cache = BTreeMap::<String, Vec<String>>::new();
     let mut orphan_cache = BTreeMap::<String, bool>::new();
 
@@ -2879,6 +2941,7 @@ pub fn build_path_entries(snapshot: &FullSnapshot) -> Vec<PathEntry> {
                 &files,
                 &mut cache,
                 &mut orphan_cache,
+                &root_aliases,
                 &file.id,
                 &mut BTreeSet::new(),
             );
@@ -2895,6 +2958,30 @@ pub fn build_path_entries(snapshot: &FullSnapshot) -> Vec<PathEntry> {
             let depth = primary_path.split('/').filter(|segment| !segment.is_empty()).count();
 
             PathEntry { file_id: file.id.clone(), primary_path, all_paths, depth, path_state }
+        })
+        .collect()
+}
+
+fn infer_root_parent_aliases(
+    snapshot: &FullSnapshot,
+    files: &BTreeMap<String, FileRecord>,
+) -> BTreeSet<String> {
+    let mut parent_counts = BTreeMap::<String, usize>::new();
+    for file in &snapshot.files {
+        for parent_id in &file.parents {
+            if parent_id != MY_DRIVE_ROOT_ID && !files.contains_key(parent_id) {
+                *parent_counts.entry(parent_id.clone()).or_default() += 1;
+            }
+        }
+    }
+
+    parent_counts
+        .into_iter()
+        // Google returns the concrete My Drive root ID for live-created root folders.
+        // In this My Drive-only backend, that ID is a missing "0A..." parent used by
+        // many otherwise top-level items; true orphan parents should stay orphaned.
+        .filter_map(|(parent_id, count)| {
+            (parent_id.starts_with("0A") && count >= 10).then_some(parent_id)
         })
         .collect()
 }
@@ -3324,6 +3411,7 @@ fn resolve_paths_for_file(
     files: &BTreeMap<String, FileRecord>,
     cache: &mut BTreeMap<String, Vec<String>>,
     orphan_cache: &mut BTreeMap<String, bool>,
+    root_aliases: &BTreeSet<String>,
     file_id: &str,
     visiting: &mut BTreeSet<String>,
 ) -> (Vec<String>, bool) {
@@ -3346,7 +3434,7 @@ fn resolve_paths_for_file(
         resolved_paths.insert(format!("/{}", file.name));
     } else {
         for parent_id in &file.parents {
-            if parent_id == "root" {
+            if parent_id == "root" || root_aliases.contains(parent_id) {
                 resolved_paths.insert(format!("/{}", file.name));
                 continue;
             }
@@ -3356,8 +3444,14 @@ fn resolve_paths_for_file(
                 continue;
             }
 
-            let (parent_paths, parent_had_orphan) =
-                resolve_paths_for_file(files, cache, orphan_cache, parent_id, visiting);
+            let (parent_paths, parent_had_orphan) = resolve_paths_for_file(
+                files,
+                cache,
+                orphan_cache,
+                root_aliases,
+                parent_id,
+                visiting,
+            );
             had_orphan |= parent_had_orphan;
 
             for parent_path in parent_paths {

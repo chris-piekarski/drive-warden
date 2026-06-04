@@ -711,10 +711,12 @@ fn unshare_and_change_helpers_cover_remaining_paths() {
     )]);
     let mut cache = BTreeMap::new();
     let mut orphan_cache = BTreeMap::new();
+    let root_aliases = BTreeSet::new();
     let (missing_paths, missing_orphan) = resolve_paths_for_file(
         &files,
         &mut cache,
         &mut orphan_cache,
+        &root_aliases,
         "missing",
         &mut BTreeSet::new(),
     );
@@ -725,6 +727,7 @@ fn unshare_and_change_helpers_cover_remaining_paths() {
         &files,
         &mut cache,
         &mut orphan_cache,
+        &root_aliases,
         "folder",
         &mut BTreeSet::new(),
     );
@@ -1610,4 +1613,25 @@ fn apply_move_orchestration_provisions_destination_and_records_history() {
     assert_eq!(folder_history.len(), 2);
     assert_eq!(folder_history[0].status, "pending");
     assert_eq!(folder_history[1].status, "applied");
+}
+
+#[test]
+fn account_about_derives_storage_breakdown() {
+    let about = AccountAbout::from_quota(
+        StorageQuota {
+            limit: Some(100),
+            usage: 90,
+            usage_in_drive: 70,
+            usage_in_drive_trash: 20,
+        },
+        Some(5_000),
+        Some(true),
+    );
+
+    assert_eq!(about.active_drive_bytes, 50);
+    assert_eq!(about.non_drive_bytes, 20);
+    assert_eq!(about.trash_reclaimable_bytes, 20);
+    assert_eq!(about.trash_pct_of_limit(), Some(20.0));
+    assert_eq!(about.max_upload_size, Some(5_000));
+    assert!(about.can_create_drives.unwrap());
 }

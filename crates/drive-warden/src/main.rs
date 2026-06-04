@@ -11,10 +11,10 @@ use gdrive_core::{
     apply_move_orchestration, apply_trash, apply_unshare, apply_unshare_with_options, auth_status,
     duplicate_groups, inspect_exif, inspect_file_details, login, logout, move_orchestration_plan,
     sharing_findings, storage_summary, sync_inventory, trash_plan, unshare_plan,
-    unshare_plan_with_options, DriveGateway, DriveScope, InventoryQuery, InventoryRepository,
-    MoveDestinationTarget, MoveOptions, OwnerScope, RemoteDbEndpoint, RemoteDbManifest,
-    RemoteDbSyncDecision, RemoteFileMetadata, ReportWriter, RetainCopyOptions, SharedWithFilter,
-    TrashOptions, TrashedFileEntry, APP_NAME,
+    unshare_plan_with_options, AccountAbout, DriveGateway, DriveScope, InventoryQuery,
+    InventoryRepository, MoveDestinationTarget, MoveOptions, OwnerScope, RemoteDbEndpoint,
+    RemoteDbManifest, RemoteDbSyncDecision, RemoteFileMetadata, ReportWriter, RetainCopyOptions,
+    SharedWithFilter, TrashOptions, TrashedFileEntry, APP_NAME,
 };
 use gdrive_db::{DatabaseStats, RemoteSyncDirection, SqliteInventoryRepository, VacuumResult};
 use gdrive_drive::{GoogleDriveGateway, MockDriveGateway};
@@ -122,6 +122,8 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Report(command) => match command {
             ReportCommand::All(args) => {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
+                let gateway = runtime.build_gateway();
+                let account_about = fetch_account_about_best_effort(gateway.as_ref()).await;
                 let writer = MarkdownReportWriter;
                 let output_dir = resolve_report_dir(&runtime, args.output.as_deref());
                 let query = InventoryQuery::default();
@@ -146,6 +148,7 @@ async fn run(cli: Cli) -> Result<()> {
                         &duplicates,
                         &sharing,
                         &storage,
+                        account_about.as_ref(),
                     ),
                 )?;
                 writer.write_markdown(
@@ -158,7 +161,7 @@ async fn run(cli: Cli) -> Result<()> {
                 )?;
                 writer.write_markdown(
                     storage_path.to_str().expect("storage path"),
-                    &render_storage_report(sync_state.as_ref(), &storage),
+                    &render_storage_report(sync_state.as_ref(), &storage, account_about.as_ref()),
                 )?;
 
                 println!(
@@ -190,31 +193,48 @@ async fn run(cli: Cli) -> Result<()> {
                     Ok(render_sharing_report(sync_state, &sharing))
                 },
             ),
-            ReportCommand::Storage(args) => write_single_report(
-                &runtime,
-                args.output.as_deref(),
-                "storage.md",
-                |repository, sync_state| {
-                    let query = InventoryQuery::default();
-                    let storage =
-                        storage_summary(repository, &query, runtime.stale_threshold_days)?;
-                    Ok(render_storage_report(sync_state, &storage))
-                },
-            ),
-            ReportCommand::Summary(args) => write_single_report(
-                &runtime,
-                args.output.as_deref(),
-                "summary.md",
-                |repository, sync_state| {
-                    let query = InventoryQuery::default();
-                    let items = repository.load_inventory_items()?;
-                    let duplicates = duplicate_groups(repository, &query)?;
-                    let sharing = sharing_findings(repository, &query)?;
-                    let storage =
-                        storage_summary(repository, &query, runtime.stale_threshold_days)?;
-                    Ok(render_summary_report(sync_state, &items, &duplicates, &sharing, &storage))
-                },
-            ),
+            ReportCommand::Storage(args) => {
+                let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
+                let gateway = runtime.build_gateway();
+                let account_about = fetch_account_about_best_effort(gateway.as_ref()).await;
+                let sync_state = repository.get_sync_state()?;
+                let query = InventoryQuery::default();
+                let storage = storage_summary(&repository, &query, runtime.stale_threshold_days)
+                    .map_err(anyhow::Error::msg)?;
+                let contents =
+                    render_storage_report(sync_state.as_ref(), &storage, account_about.as_ref());
+                let path = resolve_report_dir(&runtime, args.output.as_deref()).join("storage.md");
+                MarkdownReportWriter
+                    .write_markdown(path.to_str().expect("storage path"), &contents)?;
+                println!("wrote report: {}", path.display());
+                Ok(())
+            }
+            ReportCommand::Summary(args) => {
+                let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
+                let gateway = runtime.build_gateway();
+                let account_about = fetch_account_about_best_effort(gateway.as_ref()).await;
+                let sync_state = repository.get_sync_state()?;
+                let query = InventoryQuery::default();
+                let items = repository.load_inventory_items()?;
+                let duplicates =
+                    duplicate_groups(&repository, &query).map_err(anyhow::Error::msg)?;
+                let sharing = sharing_findings(&repository, &query).map_err(anyhow::Error::msg)?;
+                let storage = storage_summary(&repository, &query, runtime.stale_threshold_days)
+                    .map_err(anyhow::Error::msg)?;
+                let contents = render_summary_report(
+                    sync_state.as_ref(),
+                    &items,
+                    &duplicates,
+                    &sharing,
+                    &storage,
+                    account_about.as_ref(),
+                );
+                let path = resolve_report_dir(&runtime, args.output.as_deref()).join("summary.md");
+                MarkdownReportWriter
+                    .write_markdown(path.to_str().expect("summary path"), &contents)?;
+                println!("wrote report: {}", path.display());
+                Ok(())
+            }
         },
         Command::Find(command) => match command {
             FindCommand::Duplicates(args) => {
@@ -1138,6 +1158,10 @@ fn parse_shared_with_filter(raw: &str) -> Result<SharedWithFilter> {
     bail!("unsupported --shared-with value `{raw}`")
 }
 
+async fn fetch_account_about_best_effort(gateway: &dyn DriveGateway) -> Option<AccountAbout> {
+    gateway.get_account_about().await.ok()
+}
+
 fn resolve_report_dir(runtime: &AppRuntime, output: Option<&str>) -> PathBuf {
     output.map(PathBuf::from).unwrap_or_else(|| {
         runtime.reports_output_dir.join(Utc::now().format("%Y-%m-%d").to_string())
@@ -1666,6 +1690,7 @@ struct RemoteDbReleaseListItem {
 struct OperatorStatus {
     auth: String,
     db: DatabaseStats,
+    account_about: Option<AccountAbout>,
     remote_db: RemoteDbStatus,
     trash: TrashDeadlineSummary,
     release_count: usize,
@@ -1824,9 +1849,11 @@ async fn build_operator_status(
     if auth == "not_logged_in" {
         warnings.push("not logged in; remote checks and live sync require auth login".into());
     }
+    let account_about = fetch_account_about_best_effort(gateway).await;
     Ok(OperatorStatus {
         auth,
         db,
+        account_about,
         remote_db,
         trash,
         release_count: releases.releases.len(),
@@ -2600,6 +2627,34 @@ fn print_operator_status(format: OutputFormat, status: &OperatorStatus) -> Resul
                 status.db.path_count,
                 status.db.last_sync_status.as_deref().unwrap_or("unknown")
             );
+            match &status.account_about {
+                Some(about) => {
+                    let quota = &about.quota;
+                    if let Some(limit) = quota.limit {
+                        let free = quota.free_bytes().unwrap_or(0);
+                        println!(
+                            "account_about: used={} limit={} free={} active_drive={} non_drive={} trash_reclaimable={} max_upload={}",
+                            quota.usage,
+                            limit,
+                            free,
+                            about.active_drive_bytes,
+                            about.non_drive_bytes,
+                            about.trash_reclaimable_bytes,
+                            about.max_upload_size.map(|value| value.to_string()).unwrap_or_else(|| "unknown".into())
+                        );
+                    } else {
+                        println!(
+                            "account_about: used={} limit=unlimited active_drive={} non_drive={} trash_reclaimable={} max_upload={}",
+                            quota.usage,
+                            about.active_drive_bytes,
+                            about.non_drive_bytes,
+                            about.trash_reclaimable_bytes,
+                            about.max_upload_size.map(|value| value.to_string()).unwrap_or_else(|| "unknown".into())
+                        );
+                    }
+                }
+                None => println!("account_about: unavailable"),
+            }
             println!(
                 "remote_db: decision={} remote_exists={} releases={}",
                 status.remote_db.decision,

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const APP_NAME: &str = "gdrive-optimize";
+pub const APP_NAME: &str = "drive-warden";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const GOOGLE_DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 
@@ -897,6 +897,11 @@ pub trait DriveGateway: Send + Sync {
             "remote file update is not supported by this Drive backend for `{file_id}` (`{name}` as `{mime_type}`)"
         )))
     }
+    async fn rename_file(&self, file_id: &str, new_name: &str) -> CoreResult<RemoteFileMetadata> {
+        Err(CoreError::Message(format!(
+            "remote file rename is not supported by this Drive backend for `{file_id}` -> `{new_name}`"
+        )))
+    }
     async fn download_file(&self, file_id: &str) -> CoreResult<Vec<u8>> {
         Err(CoreError::Message(format!(
             "remote file download is not supported by this Drive backend for `{file_id}`"
@@ -1223,7 +1228,7 @@ pub fn trash_plan<R: InventoryRepository + ?Sized>(
 fn ensure_committed_snapshot<R: InventoryRepository + ?Sized>(repository: &R) -> CoreResult<()> {
     let Some(state) = repository.get_sync_state()? else {
         return Err(CoreError::Message(
-            "destructive apply requires a committed local sync snapshot; run `gdrive-optimize sync` first"
+            "destructive apply requires a committed local sync snapshot; run `drive-warden sync` first"
                 .into(),
         ));
     };
@@ -1547,7 +1552,7 @@ where
 {
     let destination_parent_id = plan.destination_parent_id.as_deref().unwrap_or("root");
     let destination_folder_name =
-        format!("gdrive-optimize retained copy {}", Utc::now().format("%Y%m%dT%H%M%SZ"));
+        format!("drive-warden retained copy {}", Utc::now().format("%Y%m%dT%H%M%SZ"));
     let destination_folder =
         gateway.create_folder(destination_parent_id, &destination_folder_name).await?;
     repository.append_audit_log(&AuditLogEntry {

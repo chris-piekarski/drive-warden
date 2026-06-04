@@ -11,27 +11,27 @@ Identify exposed files, separate actionable permissions from inherited/non-actio
 1. Refresh the snapshot.
 
 ```bash
-cargo run -p gdrive-optimize -- sync
+cargo run -p drive-warden -- sync
 ```
 
 2. List all shared findings.
 
 ```bash
-cargo run -p gdrive-optimize -- find shared --shared
+cargo run -p drive-warden -- find shared --shared
 ```
 
 3. Narrow the review to a specific audience type.
 
 ```bash
-cargo run -p gdrive-optimize -- find shared --shared-with anyone
+cargo run -p drive-warden -- find shared --shared-with anyone
 
-cargo run -p gdrive-optimize -- find shared --shared-with domain:example.com
+cargo run -p drive-warden -- find shared --shared-with domain:example.com
 ```
 
 4. Preview the remediation plan.
 
 ```bash
-cargo run -p gdrive-optimize -- unshare --shared-with anyone
+cargo run -p drive-warden -- unshare --shared-with anyone
 ```
 
 The preview distinguishes:
@@ -59,7 +59,7 @@ For the live backend, an `actionable` (direct) row means all of the following ar
 Use `inspect file <id>` for any row you are uncertain about:
 
 ```bash
-cargo run -p gdrive-optimize -- inspect file <file-id>
+cargo run -p drive-warden -- inspect file <file-id>
 ```
 
 Questions to answer before applying:
@@ -74,13 +74,13 @@ Questions to answer before applying:
 Apply only after a successful dry run:
 
 ```bash
-cargo run -p gdrive-optimize -- unshare --shared-with anyone --apply --yes
+cargo run -p drive-warden -- unshare --shared-with anyone --apply --yes
 ```
 
 If you need to retain your own backup copy before tightening sharing, use:
 
 ```bash
-cargo run -p gdrive-optimize -- unshare --shared-with anyone --retain-copy --apply --yes
+cargo run -p drive-warden -- unshare --shared-with anyone --retain-copy --apply --yes
 ```
 
 That workflow creates a new retained-copy folder in `My Drive` first, copies the targeted file or folder tree into it, and only then removes the targeted sharing permission. If the backup step fails, the permission-removal step is not attempted for that run.
@@ -88,9 +88,9 @@ That workflow creates a new retained-copy folder in `My Drive` first, copies the
 Then verify:
 
 ```bash
-cargo run -p gdrive-optimize -- find shared --shared-with anyone
+cargo run -p drive-warden -- find shared --shared-with anyone
 
-cargo run -p gdrive-optimize -- report sharing -o reports/sharing-audit
+cargo run -p drive-warden -- report sharing -o reports/sharing-audit
 ```
 
 ## Audit trail

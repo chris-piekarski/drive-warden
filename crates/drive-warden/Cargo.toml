@@ -1,5 +1,5 @@
 [package]
-name = "gdrive-optimize"
+name = "drive-warden"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

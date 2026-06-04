@@ -405,6 +405,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "drive-warden"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "gdrive-core",
+ "gdrive-db",
+ "gdrive-drive",
+ "gdrive-report",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -574,27 +595,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "yup-oauth2",
-]
-
-[[package]]
-name = "gdrive-optimize"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "clap_complete",
- "gdrive-core",
- "gdrive-db",
- "gdrive-drive",
- "gdrive-report",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

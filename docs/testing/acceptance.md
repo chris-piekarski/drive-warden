@@ -20,9 +20,9 @@ Acceptance is split into two layers:
 
 ## Backing suites
 
-- `crates/gdrive-optimize/tests/acceptance_mock_end_to_end.rs`
-- focused functional suites under `crates/gdrive-optimize/tests/cli_*_functional.rs`
-- fixture validation via `crates/gdrive-optimize/tests/fixtures_validate.rs`
+- `crates/drive-warden/tests/acceptance_mock_end_to_end.rs`
+- focused functional suites under `crates/drive-warden/tests/cli_*_functional.rs`
+- fixture validation via `crates/drive-warden/tests/fixtures_validate.rs`
 
 ## Manual live layer
 

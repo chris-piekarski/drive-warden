@@ -1,4 +1,4 @@
-# gdrive-optimize — Master Plan
+# drive-warden — Master Plan
 
 > **Status:** live `My Drive` backend implemented; Shared Drives remain Phase 5 scope
 > **Version:** 0.2.0-plan
@@ -9,7 +9,7 @@
 
 ## 1. Executive summary
 
-**gdrive-optimize** is a Rust CLI that replaces the slow, opaque Google Drive web UI with a fast, local-first command-line experience. It maintains a **SQLite inventory** of every file and folder the operator can access, updated incrementally via the **Google Drive Changes API**, so repeated runs avoid re-fetching unchanged metadata.
+**drive-warden** is a Rust CLI that replaces the slow, opaque Google Drive web UI with a fast, local-first command-line experience. It maintains a **SQLite inventory** of every file and folder the operator can access, updated incrementally via the **Google Drive Changes API**, so repeated runs avoid re-fetching unchanged metadata.
 
 The operator can:
 
@@ -25,7 +25,7 @@ Design priorities: **correctness**, **operator safety** (dry-run, confirmations)
 
 ## 2. Problem statement
 
-| Pain (web UI) | gdrive-optimize response |
+| Pain (web UI) | drive-warden response |
 |---------------|--------------------------|
 | Slow to answer “what do I have?” | Local SQLite queries in milliseconds |
 | Hard to find duplicates | Indexed `md5_checksum` + name/size heuristics |
@@ -103,7 +103,7 @@ Every unnecessary `files.get` or full-tree crawl has a real energy cost. The app
 1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
 2. Enable **Google Drive API**
 3. Create **OAuth 2.0 Client ID** → type **Desktop app**
-4. Download `credentials.json` → place in `data/` (gitignored) or path from `GDRIVE_OPTIMIZE_CREDENTIALS`
+4. Download `credentials.json` → place in `data/` (gitignored) or path from `DRIVE_WARDEN_CREDENTIALS`
 5. On first `auth login`, browser opens; tokens stored in `data/tokens/` with local file protections (`0600`) — see §8
 
 **OAuth scopes (least-privilege, upgraded on demand):**
@@ -124,10 +124,10 @@ On first write attempt without `drive` scope, the CLI prompts: *"This action req
 
 ```mermaid
 C4Context
-    title gdrive-optimize — System Context
+    title drive-warden — System Context
 
     Person(operator, "Operator", "Manages personal Google Drive")
-    System(cli, "gdrive-optimize CLI", "Rust binary: sync, analyze, act, report")
+    System(cli, "drive-warden CLI", "Rust binary: sync, analyze, act, report")
     SystemDb(sqlite, "SQLite Inventory", "Local metadata cache")
     System_Ext(gdrive, "Google Drive API v3", "files, changes, permissions")
     System_Ext(google_auth, "Google OAuth 2.0", "Installed app flow")
@@ -144,7 +144,7 @@ C4Context
 ```mermaid
 graph TB
     subgraph workspace["Cargo Workspace"]
-        BIN["gdrive-optimize<br/>(binary)"]
+        BIN["drive-warden<br/>(binary)"]
         CORE["gdrive-core<br/>(library)"]
         DRIVE["gdrive-drive<br/>(library)"]
         DB["gdrive-db<br/>(library)"]
@@ -162,7 +162,7 @@ graph TB
 
 | Crate | Responsibility |
 |-------|----------------|
-| `gdrive-optimize` | CLI entrypoint, clap parsing, human output, exit codes, dependency wiring |
+| `drive-warden` | CLI entrypoint, clap parsing, human output, exit codes, dependency wiring |
 | `gdrive-core` | Domain types, ports, use cases, sync orchestration, duplicate/sharing/storage analysis |
 | `gdrive-drive` | Google Drive adapter implementing core ports via `google-drive3` / `yup-oauth2` |
 | `gdrive-db` | SQLite adapter implementing repositories, migrations, sync journaling, path cache persistence |
@@ -192,11 +192,11 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant Op as Operator
-    participant CLI as gdrive-optimize
+    participant CLI as drive-warden
     participant DB as SQLite
     participant API as Drive API
 
-    Op->>CLI: gdrive-optimize sync
+    Op->>CLI: drive-warden sync
     CLI->>DB: Open sync_run(status=in_progress)
 
     alt First run or --full
@@ -494,7 +494,7 @@ The mock backend must model the same request/response surface, including removed
 
 ## 7. CLI specification
 
-Binary name: **`gdrive-optimize`** (alias: `gdo` optional via symlink or clap alias).
+Binary name: **`drive-warden`** (alias: `gdo` optional via symlink or clap alias).
 
 ### 7.1 Global flags
 
@@ -563,7 +563,7 @@ Selected implementation: `anstream` + `anstyle` for color, `indicatif` for progr
 ### 7.2 Commands
 
 ```text
-gdrive-optimize
+drive-warden
 ├── auth
 │   ├── login          # OAuth installed flow; stores refresh token
 │   ├── logout         # Revoke token + delete local credentials
@@ -628,14 +628,14 @@ Each top-level command must provide a high-quality `--help` page with:
 
 Top-level command help must be available for:
 
-- `gdrive-optimize --help`
-- `gdrive-optimize auth --help`
-- `gdrive-optimize sync --help`
-- `gdrive-optimize report --help`
-- `gdrive-optimize find --help`
-- `gdrive-optimize inspect --help`
-- `gdrive-optimize unshare --help`
-- `gdrive-optimize db --help`
+- `drive-warden --help`
+- `drive-warden auth --help`
+- `drive-warden sync --help`
+- `drive-warden report --help`
+- `drive-warden find --help`
+- `drive-warden inspect --help`
+- `drive-warden unshare --help`
+- `drive-warden db --help`
 
 ### 7.2.2 Output modes by command
 
@@ -663,13 +663,13 @@ The operator must be able to discover, preview, and control behavior without rea
 
 ```bash
 make build
-./target/release/gdrive-optimize auth login      # readonly scope
-./target/release/gdrive-optimize sync            # first run: My Drive bootstrap
-./target/release/gdrive-optimize report all -o reports/2026-05-28/
-./target/release/gdrive-optimize find duplicates
-./target/release/gdrive-optimize unshare --shared-with anyone --dry-run
-./target/release/gdrive-optimize unshare --shared-with anyone --apply --yes  # upgrades scope
-./target/release/gdrive-optimize auth logout
+./target/release/drive-warden auth login      # readonly scope
+./target/release/drive-warden sync            # first run: My Drive bootstrap
+./target/release/drive-warden report all -o reports/2026-05-28/
+./target/release/drive-warden find duplicates
+./target/release/drive-warden unshare --shared-with anyone --dry-run
+./target/release/drive-warden unshare --shared-with anyone --apply --yes  # upgrades scope
+./target/release/drive-warden auth logout
 ```
 
 ---
@@ -679,7 +679,7 @@ make build
 ```mermaid
 sequenceDiagram
     participant Op as Operator
-    participant CLI as gdrive-optimize
+    participant CLI as drive-warden
     participant Store as Token Store
     participant Google as Google OAuth
 
@@ -771,9 +771,9 @@ Make targets are convenience wrappers. The CLI remains the source of truth for r
 |-------------|-----------------------------|
 | `make build` | `cargo build --workspace` |
 | `make build-release` | `cargo build --workspace --release` |
-| `make run` | `cargo run -p gdrive-optimize -- --help` or configured dev entrypoint |
-| `make sync` | `cargo run -p gdrive-optimize -- sync` |
-| `make report` | `cargo run -p gdrive-optimize -- report all` |
+| `make run` | `cargo run -p drive-warden -- --help` or configured dev entrypoint |
+| `make sync` | `cargo run -p drive-warden -- sync` |
+| `make report` | `cargo run -p drive-warden -- report all` |
 | `make test` | offline fast gate: unit + integration + functional |
 | `make test-all` | unattended completion gate: lint + test + acceptance + docs |
 | `make lint` | formatting + clippy + any plan-defined lint checks |
@@ -800,7 +800,7 @@ Implementation: `Makefile` with `define` blocks per category and `printf` — no
 
 - targets grouped by category
 - each target shows a concise description
-- developer convenience targets that wrap the CLI also show the equivalent `gdrive-optimize ...` invocation
+- developer convenience targets that wrap the CLI also show the equivalent `drive-warden ...` invocation
 - help output must be readable with color disabled
 
 ### 10.4 CLI rendering libraries
@@ -830,13 +830,13 @@ test-integration:
 	cargo test -p gdrive-db --test path_cache_integration
 
 test-functional:
-	cargo test -p gdrive-optimize --test cli_sync_functional
-	cargo test -p gdrive-optimize --test cli_report_functional
-	cargo test -p gdrive-optimize --test cli_find_functional
-	cargo test -p gdrive-optimize --test cli_unshare_functional
+	cargo test -p drive-warden --test cli_sync_functional
+	cargo test -p drive-warden --test cli_report_functional
+	cargo test -p drive-warden --test cli_find_functional
+	cargo test -p drive-warden --test cli_unshare_functional
 
 test-acceptance:
-	cargo test -p gdrive-optimize --test acceptance_mock_end_to_end
+	cargo test -p drive-warden --test acceptance_mock_end_to_end
 
 test-doc:
 	cargo test --workspace --doc
@@ -844,14 +844,14 @@ test-doc:
 test-all: lint test test-acceptance test-doc
 
 fixtures-validate:
-	cargo test -p gdrive-optimize --test fixtures_validate -- --nocapture
+	cargo test -p drive-warden --test fixtures_validate -- --nocapture
 
 fixtures-update:
 	@echo "Explicit snapshot/fixture refresh helper implemented in repo scripts"
 
 test-coverage:
-	cargo llvm-cov --all-features --workspace --ignore-filename-regex '(lib_tests\.rs|crates/gdrive-optimize/src/main\.rs)' --lcov --output-path lcov.info
-	cargo llvm-cov report --ignore-filename-regex '(lib_tests\.rs|crates/gdrive-optimize/src/main\.rs)' --fail-under-lines 90
+	cargo llvm-cov --all-features --workspace --ignore-filename-regex '(lib_tests\.rs|crates/drive-warden/src/main\.rs)' --lcov --output-path lcov.info
+	cargo llvm-cov report --ignore-filename-regex '(lib_tests\.rs|crates/drive-warden/src/main\.rs)' --fail-under-lines 90
 ```
 
 Contract:
@@ -940,9 +940,9 @@ Required capabilities:
 The CLI must be runnable in standalone mode:
 
 ```bash
-gdrive-optimize --backend mock --config tests/config/mock.toml sync
-gdrive-optimize --backend mock report all -o tmp/reports/
-gdrive-optimize --backend mock unshare --shared-with anyone --dry-run
+drive-warden --backend mock --config tests/config/mock.toml sync
+drive-warden --backend mock report all -o tmp/reports/
+drive-warden --backend mock unshare --shared-with anyone --dry-run
 ```
 
 **Mock auth contract (required):**
@@ -1045,7 +1045,7 @@ crates/gdrive-db/tests/
 crates/gdrive-core/tests/
 └── sync_integration.rs
 
-crates/gdrive-optimize/tests/
+crates/drive-warden/tests/
 ├── cli_sync_functional.rs
 ├── cli_report_functional.rs
 ├── cli_find_functional.rs
@@ -1161,7 +1161,7 @@ Each architecture/design doc **must include at least one Mermaid diagram**.
 
 [database]
 path = "data/inventory.db"
-remote_folder_name = "gdrive-optimize-db"
+remote_folder_name = "drive-warden-db"
 remote_db_name = "inventory.db"
 remote_manifest_name = "inventory.db.manifest.json"
 
@@ -1316,7 +1316,7 @@ Errors display: **what failed** + **how to fix** + optional `--verbose` backtrac
 
 | # | Decision |
 |---|----------|
-| 1 | Binary: `gdrive-optimize` + `gdo` alias |
+| 1 | Binary: `drive-warden` + `gdo` alias |
 | 2 | OAuth: `drive.metadata.readonly` at login; upgrade to `drive` on first write |
 | 3 | Database: local SQLite only in v1 |
 | 4 | Trash: recoverable move-to-trash supported; trashed items remain excluded from sync/analysis/reports; permanent cleanup deferred |
@@ -1363,7 +1363,7 @@ No remaining open questions block implementation.
 ## Appendix A — Project directory (target)
 
 ```text
-gdrive-optimize/
+drive-warden/
 ├── Cargo.toml                 # workspace
 ├── Makefile
 ├── README.md
@@ -1372,7 +1372,7 @@ gdrive-optimize/
 ├── clippy.toml
 ├── rust-toolchain.toml
 ├── crates/
-│   ├── gdrive-optimize/       # binary
+│   ├── drive-warden/       # binary
 │   ├── gdrive-core/
 │   ├── gdrive-drive/
 │   ├── gdrive-db/

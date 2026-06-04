@@ -10,7 +10,7 @@ fn completions_render_for_supported_shells() {
         let output = support::run_mock_command(&temp_dir, &["completions", shell]);
         assert!(output.status.success(), "shell={shell} stderr={}", support::stderr(&output));
         let stdout = support::stdout(&output);
-        assert!(stdout.contains("gdrive-optimize"), "shell={shell} stdout={stdout}");
+        assert!(stdout.contains("drive-warden"), "shell={shell} stdout={stdout}");
     }
 }
 
@@ -70,7 +70,7 @@ session_path = "{}"
     )
     .expect("config");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_gdrive-optimize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_drive-warden"))
         .current_dir(support::workspace_root())
         .args([
             "--config",
@@ -81,7 +81,7 @@ session_path = "{}"
             "login",
         ])
         .output()
-        .expect("run gdrive-optimize");
+        .expect("run drive-warden");
 
     assert!(!output.status.success(), "stdout={}", support::stdout(&output));
     let stderr = support::stderr(&output);

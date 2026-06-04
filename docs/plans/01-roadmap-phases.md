@@ -20,7 +20,7 @@
 
 ```mermaid
 gantt
-    title gdrive-optimize Implementation
+    title drive-warden Implementation
     dateFormat  YYYY-MM-DD
     section Foundation
     Phase 0 Scaffold           :p0, 2026-06-01, 7d
@@ -48,7 +48,7 @@ gantt
 |------|-----------|
 | Cargo workspace (5 crates) | `cargo build` succeeds with no cyclic dependencies |
 | Makefile | `make help`, `build`, `test`, `lint`, `clean` work |
-| CLI skeleton | `gdrive-optimize --help` and top-level subcommand help pages show full command tree and examples |
+| CLI skeleton | `drive-warden --help` and top-level subcommand help pages show full command tree and examples |
 | DB migrations | Empty schema applies cleanly |
 | Repository conventions | SemVer, Conventional Commits, PR-title format, branch naming, and signed-commit policy are documented |
 | Core architecture docs | `overview.md`, `sync-engine.md`, and `path-model.md` exist with initial diagrams |

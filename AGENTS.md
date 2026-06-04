@@ -1,10 +1,10 @@
 # AGENTS.md
 
-This file helps coding agents get productive in `gdrive-optimize` without rereading the entire repo. Keep it current when architecture, commands, or safety rules change.
+This file helps coding agents get productive in `drive-warden` without rereading the entire repo. Keep it current when architecture, commands, or safety rules change.
 
 ## Project Summary
 
-`gdrive-optimize` is a Rust CLI for syncing Google Drive metadata into a local SQLite snapshot, auditing duplicates/sharing/storage, inspecting file metadata, safely applying guarded sharing or recoverable trash cleanup, and syncing the SQLite DB to a private visible My Drive folder. The live backend supports `My Drive`; Shared Drives, permanent delete/empty-trash workflows, multi-account profiles, and keyring storage are deferred.
+`drive-warden` is a Rust CLI for syncing Google Drive metadata into a local SQLite snapshot, auditing duplicates/sharing/storage, inspecting file metadata, safely applying guarded sharing or recoverable trash cleanup, and syncing the SQLite DB to a private visible My Drive folder. The live backend supports `My Drive`; Shared Drives, permanent delete/empty-trash workflows, multi-account profiles, and keyring storage are deferred.
 
 The project is local-first and safety-first:
 
@@ -19,7 +19,7 @@ The project is local-first and safety-first:
 - `crates/gdrive-drive/`: `DriveGateway` adapters. Contains live Google Drive API/OAuth code and the fixture-backed mutable mock gateway.
 - `crates/gdrive-db/`: `InventoryRepository` SQLite adapter, embedded `refinery` migrations, path cache persistence, audit log, revoked-share history, DB stats/vacuum.
 - `crates/gdrive-report/`: Markdown report rendering and file writer.
-- `crates/gdrive-optimize/`: CLI composition root using `clap`; parses config/env/flags, builds adapters, calls core use cases, prints table/JSON output.
+- `crates/drive-warden/`: CLI composition root using `clap`; parses config/env/flags, builds adapters, calls core use cases, prints table/JSON output.
 - `migrations/`: SQLite migrations embedded by `gdrive-db`.
 - `tests/fixtures/`: mock Drive API datasets. `drive_small` is the default happy path; `drive_failures/*` cover recovery scenarios.
 - `tests/config/mock.toml`: default mock backend config.
@@ -33,7 +33,7 @@ Ignore build/coverage artifacts such as `target/`, `lcov.info`, and generated re
 Dependencies point inward:
 
 ```text
-gdrive-optimize binary
+drive-warden binary
   -> gdrive-core
   -> gdrive-drive
   -> gdrive-db
@@ -70,6 +70,7 @@ Important core ports:
 - `doctor` is the read-only operator health check and should remain safe to run before destructive or remote decisions.
 - `db remote sync` pushes only when local DB exists and remote DB is missing, pulls only when local DB is missing and remote DB exists, and fails when both exist until the operator chooses explicit `db remote push --yes` or `db remote pull --yes`.
 - `db remote release --name <tag> --yes` creates named DB snapshot files and must never overwrite an existing release tag. `db remote release list` should discover release DB/manifest pairs without mutating Drive.
+- The default remote DB folder is `drive-warden-db`. The legacy `gdrive-optimize-db` name is lookup fallback only for migrations; use `db remote rename-folder --yes` to rename it in place without moving release files.
 - Remote DB folders/files must be private and owned by the authenticated operator. Any `anyone`, `domain`, non-owner user permission, or `ownedByMe=false` endpoint is a `SECURITY ALERT` and must abort before transfer.
 - Remote DB push uses a consistent SQLite snapshot plus SHA-256 manifest. Pull verifies the manifest, writes a temp file, backs up the current local DB, then atomically replaces it.
 - SQLite migrations include `db_identity` and `remote_sync_state`. Keep remote manifests aligned with `db_instance_id` and sync generation so cross-machine conflict messages stay meaningful.
@@ -81,7 +82,7 @@ Important core ports:
 Default config path is `data/config.toml`; missing config is allowed. Useful knobs:
 
 - Global flags: `--backend google|mock`, `--config <path>`, `--db <path>`, `--format table|json`, `--no-interactive`.
-- Live env overrides: `GDRIVE_OPTIMIZE_CREDENTIALS`, `GDRIVE_OPTIMIZE_TOKENS`, `GDRIVE_OPTIMIZE_GOOGLE_SESSION`.
+- Live env overrides: `DRIVE_WARDEN_CREDENTIALS`, `DRIVE_WARDEN_TOKENS`, `DRIVE_WARDEN_GOOGLE_SESSION`.
 - Default DB: `data/inventory.db`.
 - Default live credentials/session/token paths live beside the selected DB unless configured.
 - Default report directory is configured `reports/<date>/` unless `-o <dir>` is passed.
@@ -90,9 +91,9 @@ Default config path is `data/config.toml`; missing config is allowed. Useful kno
 Mock quick flow:
 
 ```bash
-cargo run -p gdrive-optimize -- --backend mock --config tests/config/mock.toml auth login
-cargo run -p gdrive-optimize -- --backend mock --config tests/config/mock.toml sync
-cargo run -p gdrive-optimize -- --backend mock --config tests/config/mock.toml report all -o reports/mock-run
+cargo run -p drive-warden -- --backend mock --config tests/config/mock.toml auth login
+cargo run -p drive-warden -- --backend mock --config tests/config/mock.toml sync
+cargo run -p drive-warden -- --backend mock --config tests/config/mock.toml report all -o reports/mock-run
 ```
 
 ## Testing Commands
@@ -113,12 +114,12 @@ cargo test -p gdrive-core --lib
 cargo test -p gdrive-core --test sync_integration
 cargo test -p gdrive-db --test db_integration
 cargo test -p gdrive-db --test path_cache_integration
-cargo test -p gdrive-optimize --test cli_sync_functional
-cargo test -p gdrive-optimize --test cli_report_functional
-cargo test -p gdrive-optimize --test cli_find_functional
-cargo test -p gdrive-optimize --test cli_polish_functional
-cargo test -p gdrive-optimize --test cli_unshare_functional
-cargo test -p gdrive-optimize --test acceptance_mock_end_to_end
+cargo test -p drive-warden --test cli_sync_functional
+cargo test -p drive-warden --test cli_report_functional
+cargo test -p drive-warden --test cli_find_functional
+cargo test -p drive-warden --test cli_polish_functional
+cargo test -p drive-warden --test cli_unshare_functional
+cargo test -p drive-warden --test acceptance_mock_end_to_end
 ```
 
 Coverage target:
@@ -135,9 +136,9 @@ The Makefile enforces formatting and Clippy via `cargo fmt --all -- --check` and
 - End-to-end core orchestration with fake gateways/repos: `crates/gdrive-core/tests/sync_integration.rs`.
 - SQLite persistence, migrations, path cache: `crates/gdrive-db/tests/*` or `crates/gdrive-db/src/lib_tests.rs`.
 - Google/mock adapter mapping, scope/session behavior, fixture mutation: `crates/gdrive-drive/src/lib_tests.rs`.
-- CLI behavior through the compiled binary: `crates/gdrive-optimize/tests/*`.
+- CLI behavior through the compiled binary: `crates/drive-warden/tests/*`.
 - Markdown rendering/writer details: `crates/gdrive-report/src/lib_tests.rs`.
-- Fixture schema/existence checks: `crates/gdrive-optimize/tests/fixtures_validate.rs`.
+- Fixture schema/existence checks: `crates/drive-warden/tests/fixtures_validate.rs`.
 
 Functional and acceptance tests must use mock fixtures, not live Google.
 
@@ -154,11 +155,11 @@ Functional and acceptance tests must use mock fixtures, not live Google.
 
 ## Common Change Recipes
 
-- Add a CLI flag: update `QueryFilters`/args in `crates/gdrive-optimize/src/main.rs`, map it into `InventoryQuery` or command options, add CLI functional coverage, and update docs/help examples if user-visible.
+- Add a CLI flag: update `QueryFilters`/args in `crates/drive-warden/src/main.rs`, map it into `InventoryQuery` or command options, add CLI functional coverage, and update docs/help examples if user-visible.
 - Add a Drive metadata field: update `FileRecord`, Google field masks and mapping in `gdrive-drive`, mock fixture shape as needed, SQLite migration and load/save code, reports/tests/docs.
 - Change sync behavior: update `gdrive-core` first, then SQLite repository behavior if persistence semantics change; add fake-gateway integration coverage and failure-path tests.
 - Change reports: update `gdrive-report`, report functional tests, and any checked-in generated report samples if they are intentionally kept current.
-- Change unshare/write behavior: update plan/apply code in `gdrive-core`, CLI guardrails in `gdrive-optimize`, mock mutation behavior if needed (folder-grant deletes must cascade to inherited descendants), `audit_log` and `revoked_share_history` expectations, and non-interactive tests.
+- Change unshare/write behavior: update plan/apply code in `gdrive-core`, CLI guardrails in `drive-warden`, mock mutation behavior if needed (folder-grant deletes must cascade to inherited descendants), `audit_log` and `revoked_share_history` expectations, and non-interactive tests.
 - Change trash/write behavior: update `TrashPlan`/`apply_trash` in `gdrive-core`, live and mock `DriveGateway::trash_file`, CLI guardrails, audit expectations, and post-apply sync tests.
 - Change remote DB sync behavior: update core manifest/privacy models, live and mock remote file operations, CLI `db remote` guardrails, Make targets, manifest verification tests, and docs.
 

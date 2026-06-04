@@ -11,43 +11,43 @@ Refresh the local snapshot, generate a report pack, review large/stale items, an
 1. Refresh the snapshot.
 
 ```bash
-cargo run -p gdrive-optimize -- sync
+cargo run -p drive-warden -- sync
 ```
 
 2. Generate the full report pack.
 
 ```bash
-cargo run -p gdrive-optimize -- report all -o reports/monthly-cleanup
+cargo run -p drive-warden -- report all -o reports/monthly-cleanup
 ```
 
 3. Review oversized or stale files.
 
 ```bash
-cargo run -p gdrive-optimize -- find large --min 5000000
+cargo run -p drive-warden -- find large --min 5000000
 ```
 
 4. Review duplicate groups.
 
 ```bash
-cargo run -p gdrive-optimize -- find duplicates --limit 25
+cargo run -p drive-warden -- find duplicates --limit 25
 ```
 
 5. Preview broad sharing cleanup candidates.
 
 ```bash
-cargo run -p gdrive-optimize -- unshare --shared
+cargo run -p drive-warden -- unshare --shared
 ```
 
 6. Inspect anything ambiguous before acting.
 
 ```bash
-cargo run -p gdrive-optimize -- inspect file <file-id>
+cargo run -p drive-warden -- inspect file <file-id>
 ```
 
 7. Preview recoverable trash cleanup for stale build artifacts.
 
 ```bash
-cargo run -p gdrive-optimize -- trash --path '[orphan]/Coors/Model/*'
+cargo run -p drive-warden -- trash --path '[orphan]/Coors/Model/*'
 ```
 
 Use `--recursive` only after reviewing folder rows and descendant counts.
@@ -63,8 +63,8 @@ Use `--recursive` only after reviewing folder rows and descendant counts.
 ## Apply examples
 
 ```bash
-cargo run -p gdrive-optimize -- unshare --shared-with anyone --apply --yes
-cargo run -p gdrive-optimize -- trash --path '[orphan]/Coors/Model/*' --recursive --apply --yes
+cargo run -p drive-warden -- unshare --shared-with anyone --apply --yes
+cargo run -p drive-warden -- trash --path '[orphan]/Coors/Model/*' --recursive --apply --yes
 ```
 
 The CLI performs a follow-up sync after a successful apply so reports and follow-up queries reflect the new state.
@@ -83,11 +83,11 @@ Trash apply writes durable rows to `trashed_file_history` before the follow-up s
 - inspect `doctor` or `db stats` to confirm the local cache and remote DB state are healthy
 
 ```bash
-cargo run -p gdrive-optimize -- doctor
-cargo run -p gdrive-optimize -- db stats
-cargo run -p gdrive-optimize -- trash-status --within-days 7
-cargo run -p gdrive-optimize -- trash-history --only-pending
-cargo run -p gdrive-optimize -- db remote release list
+cargo run -p drive-warden -- doctor
+cargo run -p drive-warden -- db stats
+cargo run -p drive-warden -- trash-status --within-days 7
+cargo run -p drive-warden -- trash-history --only-pending
+cargo run -p drive-warden -- db remote release list
 ```
 
 ```sql

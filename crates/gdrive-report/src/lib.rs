@@ -34,7 +34,7 @@ pub fn render_summary_report(
     let stale_files = storage.stale_files.len();
 
     format!(
-        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: summary\n---\n\n## Executive summary\n\n- Total files in snapshot: **{}**\n- Duplicate groups: **{}** covering **{}** files\n- Sharing findings: **{}**\n- Public links: **{}**\n- Stale files: **{}**\n- Total tracked bytes: **{}**\n\n## Metrics dashboard\n\n| Metric | Value |\n|--------|-------|\n| Files | {} |\n| Duplicate groups | {} |\n| Sharing findings | {} |\n| Public links | {} |\n| Total bytes | {} |\n\n## Recommended actions\n\n1. Run `gdrive-optimize find duplicates` to inspect duplicate candidates.\n2. Run `gdrive-optimize find shared --shared-with anyone` to review public links.\n3. Run `gdrive-optimize find large --min 1048576` to inspect large files.\n\n## Appendix\n\nThis summary is generated from the local SQLite snapshot only.\n",
+        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: summary\n---\n\n## Executive summary\n\n- Total files in snapshot: **{}**\n- Duplicate groups: **{}** covering **{}** files\n- Sharing findings: **{}**\n- Public links: **{}**\n- Stale files: **{}**\n- Total tracked bytes: **{}**\n\n## Metrics dashboard\n\n| Metric | Value |\n|--------|-------|\n| Files | {} |\n| Duplicate groups | {} |\n| Sharing findings | {} |\n| Public links | {} |\n| Total bytes | {} |\n\n## Recommended actions\n\n1. Run `drive-warden find duplicates` to inspect duplicate candidates.\n2. Run `drive-warden find shared --shared-with anyone` to review public links.\n3. Run `drive-warden find large --min 1048576` to inspect large files.\n\n## Appendix\n\nThis summary is generated from the local SQLite snapshot only.\n",
         items.len(),
         duplicates.len(),
         duplicate_files,
@@ -102,7 +102,7 @@ pub fn render_sharing_report(
     }
 
     format!(
-        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: sharing\n---\n\n## Executive summary\n\n- Sharing findings: **{}**\n\n## Metrics dashboard\n\n| Metric | Value |\n|--------|-------|\n| Sharing findings | {} |\n\n## Detailed findings\n\n{}\n## Recommended actions\n\n1. Review public and external sharing rows first.\n2. Preview actionable rows with `gdrive-optimize unshare --shared-with anyone` before applying changes.\n\n## Appendix\n\nRows include both actionable and informational sharing states.\n",
+        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: sharing\n---\n\n## Executive summary\n\n- Sharing findings: **{}**\n\n## Metrics dashboard\n\n| Metric | Value |\n|--------|-------|\n| Sharing findings | {} |\n\n## Detailed findings\n\n{}\n## Recommended actions\n\n1. Review public and external sharing rows first.\n2. Preview actionable rows with `drive-warden unshare --shared-with anyone` before applying changes.\n\n## Appendix\n\nRows include both actionable and informational sharing states.\n",
         findings.len(),
         findings.len(),
         details

@@ -6,7 +6,7 @@ This Phase 0 document fixes the high-level container boundaries before feature w
 
 ```mermaid
 graph TD
-    OP[Operator] --> CLI[gdrive-optimize binary]
+    OP[Operator] --> CLI[drive-warden binary]
     CLI --> CORE[gdrive-core]
     CLI --> DRIVE[gdrive-drive]
     CLI --> DB[gdrive-db]

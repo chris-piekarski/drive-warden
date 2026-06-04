@@ -452,6 +452,28 @@ impl DriveGateway for GoogleDriveGateway {
         Ok(RemoteFileMetadata::from(map_drive_file(file)?))
     }
 
+    async fn rename_file(&self, file_id: &str, new_name: &str) -> CoreResult<RemoteFileMetadata> {
+        let session = self.ensure_scope_internal(DriveScope::Drive).await?;
+        let hub = self.build_hub().await?;
+        let request = rename_file_request(new_name);
+        let context = format!("renaming Google Drive file `{file_id}` to `{new_name}`");
+        let (_, file) = google_request!(&context, {
+            hub.files()
+                .update(request.clone(), file_id)
+                .add_scopes(oauth_scope_urls(highest_active_scope(&session.active_scopes)))
+                .supports_all_drives(false)
+                .param("fields", FILE_ITEM_FIELDS)
+                .upload(
+                    std::io::Cursor::new(Vec::<u8>::new()),
+                    "application/octet-stream"
+                        .parse()
+                        .expect("static octet-stream mime should parse"),
+                )
+                .await
+        })?;
+        Ok(RemoteFileMetadata::from(map_drive_file(file)?))
+    }
+
     async fn download_file(&self, file_id: &str) -> CoreResult<Vec<u8>> {
         let session = self.ensure_scope_internal(DriveScope::DriveReadonly).await?;
         let hub = self.build_hub().await?;
@@ -615,6 +637,10 @@ pub(super) fn update_file_request(name: &str, mime_type: &str) -> GoogleFile {
         mime_type: Some(mime_type.to_string()),
         ..GoogleFile::default()
     }
+}
+
+pub(super) fn rename_file_request(name: &str) -> GoogleFile {
+    GoogleFile { name: Some(name.to_string()), ..GoogleFile::default() }
 }
 
 pub(super) fn trash_file_request() -> GoogleFile {

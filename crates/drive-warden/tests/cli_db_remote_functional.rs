@@ -75,6 +75,43 @@ fn db_remote_release_creates_named_non_overwriting_snapshot() {
 }
 
 #[test]
+fn db_remote_rename_folder_migrates_legacy_folder_name() {
+    let temp_dir = tempfile::TempDir::new().expect("tempdir");
+    let login = support::run_mock_command(&temp_dir, &["auth", "login"]);
+    assert!(login.status.success(), "stderr: {}", support::stderr(&login));
+    let sync = support::run_mock_command(&temp_dir, &["sync"]);
+    assert!(sync.status.success(), "stderr: {}", support::stderr(&sync));
+
+    let legacy_config = temp_dir.path().join("legacy-remote.toml");
+    fs::write(
+        &legacy_config,
+        "[backend]\nkind = \"mock\"\nfixture_dir = \"tests/fixtures/drive_small\"\n\n[database]\nremote_folder_name = \"gdrive-optimize-db\"\n",
+    )
+    .expect("legacy config");
+    let push = support::run_mock_command_with_config(
+        &temp_dir,
+        &legacy_config,
+        &["db", "remote", "push", "--yes"],
+    );
+    assert!(push.status.success(), "stderr: {}", support::stderr(&push));
+
+    let rename = support::run_mock_command(&temp_dir, &["db", "remote", "rename-folder", "--yes"]);
+    assert!(rename.status.success(), "stderr: {}", support::stderr(&rename));
+    let stdout = support::stdout(&rename);
+    assert!(stdout.contains("remote db folder renamed: from=gdrive-optimize-db to=drive-warden-db"));
+
+    let status = support::run_mock_command(&temp_dir, &["db", "remote", "status"]);
+    assert!(status.status.success(), "stderr: {}", support::stderr(&status));
+    let stdout = support::stdout(&status);
+    assert!(stdout.contains("remote_exists=true"));
+    assert!(stdout.contains("drive-warden-db"));
+
+    let repeat = support::run_mock_command(&temp_dir, &["db", "remote", "rename-folder", "--yes"]);
+    assert!(repeat.status.success(), "stderr: {}", support::stderr(&repeat));
+    assert!(support::stdout(&repeat).contains("remote db folder already renamed"));
+}
+
+#[test]
 fn db_remote_push_and_pull_require_yes_when_non_interactive() {
     let temp_dir = tempfile::TempDir::new().expect("tempdir");
     let login = support::run_mock_command(&temp_dir, &["auth", "login"]);

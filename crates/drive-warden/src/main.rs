@@ -24,6 +24,9 @@ use gdrive_report::{
 use serde::Deserialize;
 use tracing_subscriber::EnvFilter;
 
+const DEFAULT_REMOTE_DB_FOLDER_NAME: &str = "drive-warden-db";
+const LEGACY_REMOTE_DB_FOLDER_NAME: &str = "gdrive-optimize-db";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -422,7 +425,7 @@ async fn run(cli: Cli) -> Result<()> {
     version,
     about = "Organize, audit, and clean up Google Drive without the web UI.",
     long_about = "A local-first Rust CLI for syncing Google Drive metadata into SQLite, auditing duplicates and sharing exposure, and safely previewing remediation commands.",
-    after_help = "Examples:\n  gdrive-optimize auth login\n  gdrive-optimize sync --full\n  gdrive-optimize report all -o reports/\n  gdrive-optimize find duplicates --limit 25\n  gdrive-optimize unshare --shared-with anyone --dry-run"
+    after_help = "Examples:\n  drive-warden auth login\n  drive-warden sync --full\n  drive-warden report all -o reports/\n  drive-warden find duplicates --limit 25\n  drive-warden unshare --shared-with anyone --dry-run"
 )]
 struct Cli {
     #[arg(long, global = true, default_value = "data/config.toml")]
@@ -466,71 +469,71 @@ enum OutputFormat {
 enum Command {
     #[command(
         about = "Generate shell completions",
-        after_help = "Examples:\n  gdrive-optimize completions bash\n  gdrive-optimize completions zsh\n  gdrive-optimize completions fish"
+        after_help = "Examples:\n  drive-warden completions bash\n  drive-warden completions zsh\n  drive-warden completions fish"
     )]
     Completions(CompletionsArgs),
     #[command(
         about = "Authenticate with Google Drive",
-        after_help = "Examples:\n  gdrive-optimize auth login\n  gdrive-optimize auth status\n  gdrive-optimize auth logout"
+        after_help = "Examples:\n  drive-warden auth login\n  drive-warden auth status\n  drive-warden auth logout"
     )]
     Auth(AuthArgs),
     #[command(
         about = "Sync inventory into the local SQLite cache",
-        after_help = "Examples:\n  gdrive-optimize sync\n  gdrive-optimize sync --full"
+        after_help = "Examples:\n  drive-warden sync\n  drive-warden sync --full"
     )]
     Sync(SyncArgs),
     #[command(subcommand)]
     #[command(
         about = "Generate Markdown reports",
-        after_help = "Examples:\n  gdrive-optimize report all -o reports/\n  gdrive-optimize report sharing"
+        after_help = "Examples:\n  drive-warden report all -o reports/\n  drive-warden report sharing"
     )]
     Report(ReportCommand),
     #[command(subcommand)]
     #[command(
         about = "Find items in the local inventory",
-        after_help = "Examples:\n  gdrive-optimize find duplicates --limit 20\n  gdrive-optimize find shared --shared-with anyone"
+        after_help = "Examples:\n  drive-warden find duplicates --limit 20\n  drive-warden find shared --shared-with anyone"
     )]
     Find(FindCommand),
     #[command(subcommand)]
     #[command(
         about = "Inspect a single file or its EXIF metadata",
-        after_help = "Examples:\n  gdrive-optimize inspect file <id>\n  gdrive-optimize inspect exif <id>"
+        after_help = "Examples:\n  drive-warden inspect file <id>\n  drive-warden inspect exif <id>"
     )]
     Inspect(InspectCommand),
     #[command(
         about = "Preview or apply permission removals",
-        after_help = "Safety: write commands default to dry-run.\nExamples:\n  gdrive-optimize unshare --shared-with anyone --dry-run\n  gdrive-optimize unshare --shared-with anyone --apply --yes"
+        after_help = "Safety: write commands default to dry-run.\nExamples:\n  drive-warden unshare --shared-with anyone --dry-run\n  drive-warden unshare --shared-with anyone --apply --yes"
     )]
     Unshare(UnshareArgs),
     #[command(
         about = "Preview or apply moves to Google Drive trash",
-        after_help = "Safety: trash commands default to dry-run and never permanently delete files.\nExamples:\n  gdrive-optimize trash --path '[orphan]/Coors/Model/*'\n  gdrive-optimize trash --path '[orphan]/Coors/Model/*' --recursive --apply --yes"
+        after_help = "Safety: trash commands default to dry-run and never permanently delete files.\nExamples:\n  drive-warden trash --path '[orphan]/Coors/Model/*'\n  drive-warden trash --path '[orphan]/Coors/Model/*' --recursive --apply --yes"
     )]
     Trash(TrashArgs),
     #[command(
         about = "Show append-only trash history",
-        after_help = "Examples:\n  gdrive-optimize trash-history\n  gdrive-optimize trash-history --only-pending --limit 100"
+        after_help = "Examples:\n  drive-warden trash-history\n  drive-warden trash-history --only-pending --limit 100"
     )]
     TrashHistory(TrashHistoryArgs),
     #[command(
         about = "Summarize trash recovery deadlines",
-        after_help = "Examples:\n  gdrive-optimize trash-status\n  gdrive-optimize trash-status --within-days 7"
+        after_help = "Examples:\n  drive-warden trash-status\n  drive-warden trash-status --within-days 7"
     )]
     TrashStatus(TrashStatusArgs),
     #[command(
         about = "Print manual restore guidance for a trashed file",
-        after_help = "This command is read-only. It does not restore files.\nExamples:\n  gdrive-optimize trash-restore --file-id <drive-file-id>\n  gdrive-optimize trash-restore --path-contains '[orphan]/Coors/Model'"
+        after_help = "This command is read-only. It does not restore files.\nExamples:\n  drive-warden trash-restore --file-id <drive-file-id>\n  drive-warden trash-restore --path-contains '[orphan]/Coors/Model'"
     )]
     TrashRestore(TrashRestoreArgs),
     #[command(
         about = "Run a read-only operator health check",
-        after_help = "Examples:\n  gdrive-optimize doctor\n  gdrive-optimize doctor --within-days 7"
+        after_help = "Examples:\n  drive-warden doctor\n  drive-warden doctor --within-days 7"
     )]
     Doctor(DoctorArgs),
     #[command(subcommand)]
     #[command(
         about = "Inspect or maintain the local database",
-        after_help = "Examples:\n  gdrive-optimize db stats\n  gdrive-optimize db vacuum"
+        after_help = "Examples:\n  drive-warden db stats\n  drive-warden db vacuum"
     )]
     Db(DbCommand),
 }
@@ -721,7 +724,7 @@ enum DbCommand {
     #[command(subcommand)]
     #[command(
         about = "Push or pull the local SQLite database to a private Google Drive folder",
-        after_help = "Examples:\n  gdrive-optimize db remote status\n  gdrive-optimize db remote sync\n  gdrive-optimize db remote push --yes\n  gdrive-optimize db remote pull --yes"
+        after_help = "Examples:\n  drive-warden db remote status\n  drive-warden db remote sync\n  drive-warden db remote push --yes\n  drive-warden db remote pull --yes"
     )]
     Remote(RemoteDbCommand),
 }
@@ -733,14 +736,29 @@ enum RemoteDbCommand {
     Push(RemoteDbWriteArgs),
     Pull(RemoteDbWriteArgs),
     #[command(
+        about = "Rename the remote DB folder in place",
+        after_help = "This is intended for one-time product rename migrations. It preserves the folder ID and all release files.\nExamples:\n  drive-warden db remote rename-folder --yes\n  drive-warden db remote rename-folder --from gdrive-optimize-db --to drive-warden-db --yes"
+    )]
+    RenameFolder(RemoteDbRenameFolderArgs),
+    #[command(
         about = "Create or list named remote DB releases",
-        after_help = "Examples:\n  gdrive-optimize db remote release --name coors-trash-v1 --yes\n  gdrive-optimize db remote release list"
+        after_help = "Examples:\n  drive-warden db remote release --name coors-trash-v1 --yes\n  drive-warden db remote release list"
     )]
     Release(RemoteDbReleaseArgs),
 }
 
 #[derive(Debug, Args, Default)]
 struct RemoteDbWriteArgs {
+    #[arg(long, action = ArgAction::SetTrue)]
+    yes: bool,
+}
+
+#[derive(Debug, Args)]
+struct RemoteDbRenameFolderArgs {
+    #[arg(long)]
+    from: Option<String>,
+    #[arg(long)]
+    to: Option<String>,
     #[arg(long, action = ArgAction::SetTrue)]
     yes: bool,
 }
@@ -818,6 +836,7 @@ struct FileDatabaseConfig {
 struct RemoteDbConfig {
     folder_id: Option<String>,
     folder_name: String,
+    legacy_folder_names: Vec<String>,
     db_name: String,
     manifest_name: String,
 }
@@ -853,25 +872,31 @@ impl AppRuntime {
             .output_dir
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("reports"));
-        let google_credentials_path = std::env::var_os("GDRIVE_OPTIMIZE_CREDENTIALS")
-            .map(PathBuf::from)
-            .or_else(|| config.google.credentials_path.map(PathBuf::from))
-            .unwrap_or_else(|| runtime_dir.join("credentials.json"));
-        let google_token_path = std::env::var_os("GDRIVE_OPTIMIZE_TOKENS")
+        let google_credentials_path =
+            env_var_os_any(&["DRIVE_WARDEN_CREDENTIALS", "GDRIVE_OPTIMIZE_CREDENTIALS"])
+                .map(PathBuf::from)
+                .or_else(|| config.google.credentials_path.map(PathBuf::from))
+                .unwrap_or_else(|| runtime_dir.join("credentials.json"));
+        let google_token_path = env_var_os_any(&["DRIVE_WARDEN_TOKENS", "GDRIVE_OPTIMIZE_TOKENS"])
             .map(PathBuf::from)
             .or_else(|| config.google.token_path.map(PathBuf::from))
             .unwrap_or_else(|| runtime_dir.join("google-tokens.json"));
-        let google_session_path = std::env::var_os("GDRIVE_OPTIMIZE_GOOGLE_SESSION")
-            .map(PathBuf::from)
-            .or_else(|| config.google.session_path.map(PathBuf::from))
-            .unwrap_or_else(|| runtime_dir.join("google-session.json"));
+        let google_session_path =
+            env_var_os_any(&["DRIVE_WARDEN_GOOGLE_SESSION", "GDRIVE_OPTIMIZE_GOOGLE_SESSION"])
+                .map(PathBuf::from)
+                .or_else(|| config.google.session_path.map(PathBuf::from))
+                .unwrap_or_else(|| runtime_dir.join("google-session.json"));
 
+        let (remote_folder_name, legacy_folder_names) = match config.database.remote_folder_name {
+            Some(name) => (name, Vec::new()),
+            None => {
+                (DEFAULT_REMOTE_DB_FOLDER_NAME.into(), vec![LEGACY_REMOTE_DB_FOLDER_NAME.into()])
+            }
+        };
         let remote_db = RemoteDbConfig {
             folder_id: config.database.remote_folder_id,
-            folder_name: config
-                .database
-                .remote_folder_name
-                .unwrap_or_else(|| "gdrive-optimize-db".into()),
+            folder_name: remote_folder_name,
+            legacy_folder_names,
             db_name: config.database.remote_db_name.unwrap_or_else(|| "inventory.db".into()),
             manifest_name: config
                 .database
@@ -905,6 +930,10 @@ impl AppRuntime {
             }
         }
     }
+}
+
+fn env_var_os_any(names: &[&str]) -> Option<std::ffi::OsString> {
+    names.iter().find_map(std::env::var_os)
 }
 
 fn load_file_config(path: &Path) -> Result<FileConfig> {
@@ -1378,6 +1407,16 @@ struct RemoteDbRelease {
 }
 
 #[derive(Debug, serde::Serialize)]
+struct RemoteDbFolderRename {
+    from_name: String,
+    to_name: String,
+    folder_id: String,
+    previous_name: String,
+    current_name: String,
+    renamed: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
 struct RemoteDbReleaseListing {
     releases: Vec<RemoteDbReleaseListItem>,
 }
@@ -1466,6 +1505,19 @@ async fn handle_remote_db_command(
             let status = build_remote_db_status(gateway, runtime, false).await?;
             let pulled = pull_remote_db(gateway, runtime, &status.remote).await?;
             print_remote_db_pulled(format, &pulled)?;
+            Ok(())
+        }
+        RemoteDbCommand::RenameFolder(args) => {
+            let from_name =
+                args.from.clone().unwrap_or_else(|| LEGACY_REMOTE_DB_FOLDER_NAME.into());
+            let to_name = args.to.clone().unwrap_or_else(|| runtime.remote_db.folder_name.clone());
+            ensure_confirmed_remote_write(
+                &format!("rename remote database folder `{from_name}` to `{to_name}`"),
+                args.yes,
+                no_interactive,
+            )?;
+            let rename = rename_remote_db_folder(gateway, runtime, args).await?;
+            print_remote_db_folder_rename(format, &rename)?;
             Ok(())
         }
         RemoteDbCommand::Release(args) => {
@@ -1601,11 +1653,7 @@ async fn load_remote_db_endpoint(
         Some(RemoteFileMetadata::from(
             gateway.get_file(folder_id).await.map_err(anyhow::Error::msg)?,
         ))
-    } else if let Some(existing) = gateway
-        .find_file_in_folder("root", &config.folder_name)
-        .await
-        .map_err(anyhow::Error::msg)?
-    {
+    } else if let Some(existing) = find_remote_db_folder(gateway, config).await? {
         Some(existing)
     } else if create_folder {
         Some(RemoteFileMetadata::from(
@@ -1640,6 +1688,99 @@ async fn load_remote_db_endpoint(
     };
 
     Ok(RemoteDbEndpoint { folder: Some(folder), db_file, manifest_file, manifest })
+}
+
+async fn find_remote_db_folder(
+    gateway: &dyn DriveGateway,
+    config: &RemoteDbConfig,
+) -> Result<Option<RemoteFileMetadata>> {
+    for name in std::iter::once(&config.folder_name).chain(config.legacy_folder_names.iter()) {
+        if let Some(existing) =
+            gateway.find_file_in_folder("root", name).await.map_err(anyhow::Error::msg)?
+        {
+            return Ok(Some(existing));
+        }
+    }
+    Ok(None)
+}
+
+async fn rename_remote_db_folder(
+    gateway: &dyn DriveGateway,
+    runtime: &AppRuntime,
+    args: RemoteDbRenameFolderArgs,
+) -> Result<RemoteDbFolderRename> {
+    if runtime.remote_db.folder_id.is_some() {
+        bail!(
+            "remote DB folder rename by name is unavailable when `remote_folder_id` is configured"
+        );
+    }
+    let from_name = args.from.unwrap_or_else(|| LEGACY_REMOTE_DB_FOLDER_NAME.into());
+    let to_name = args.to.unwrap_or_else(|| runtime.remote_db.folder_name.clone());
+    if from_name == to_name {
+        bail!("remote DB folder source and destination names are both `{from_name}`");
+    }
+
+    let existing_to =
+        gateway.find_file_in_folder("root", &to_name).await.map_err(anyhow::Error::msg)?;
+    let existing_from =
+        gateway.find_file_in_folder("root", &from_name).await.map_err(anyhow::Error::msg)?;
+
+    match (existing_from, existing_to) {
+        (Some(from), Some(to)) if from.id != to.id => {
+            bail!(
+                "both remote DB folders `{from_name}` ({}) and `{to_name}` ({}) exist; refusing ambiguous rename",
+                from.id,
+                to.id
+            )
+        }
+        (None, Some(folder)) => {
+            ensure_remote_db_folder_metadata(&folder)?;
+            validate_remote_endpoint_privacy(&RemoteDbEndpoint {
+                folder: Some(folder.clone()),
+                ..RemoteDbEndpoint::default()
+            })?;
+            Ok(RemoteDbFolderRename {
+                from_name,
+                to_name,
+                folder_id: folder.id.clone(),
+                previous_name: folder.name.clone(),
+                current_name: folder.name,
+                renamed: false,
+            })
+        }
+        (Some(folder), _) => {
+            ensure_remote_db_folder_metadata(&folder)?;
+            validate_remote_endpoint_privacy(&RemoteDbEndpoint {
+                folder: Some(folder.clone()),
+                ..RemoteDbEndpoint::default()
+            })?;
+            let renamed =
+                gateway.rename_file(&folder.id, &to_name).await.map_err(anyhow::Error::msg)?;
+            ensure_remote_db_folder_metadata(&renamed)?;
+            validate_remote_endpoint_privacy(&RemoteDbEndpoint {
+                folder: Some(renamed.clone()),
+                ..RemoteDbEndpoint::default()
+            })?;
+            Ok(RemoteDbFolderRename {
+                from_name,
+                to_name,
+                folder_id: renamed.id.clone(),
+                previous_name: folder.name,
+                current_name: renamed.name,
+                renamed: true,
+            })
+        }
+        (None, None) => {
+            bail!("remote DB folder `{from_name}` was not found and `{to_name}` does not exist")
+        }
+    }
+}
+
+fn ensure_remote_db_folder_metadata(folder: &RemoteFileMetadata) -> Result<()> {
+    if folder.mime_type != gdrive_core::GOOGLE_DRIVE_FOLDER_MIME {
+        bail!("remote DB folder target `{}` is not a Google Drive folder", folder.id);
+    }
+    Ok(())
 }
 
 async fn push_remote_db(
@@ -2139,6 +2280,29 @@ fn print_remote_db_pulled(format: OutputFormat, remote: &RemoteDbEndpoint) -> Re
     Ok(())
 }
 
+fn print_remote_db_folder_rename(
+    format: OutputFormat,
+    rename: &RemoteDbFolderRename,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(rename)?),
+        OutputFormat::Table => {
+            if rename.renamed {
+                println!(
+                    "remote db folder renamed: from={} to={} folder={}",
+                    rename.from_name, rename.to_name, rename.folder_id
+                );
+            } else {
+                println!(
+                    "remote db folder already renamed: name={} folder={}",
+                    rename.current_name, rename.folder_id
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn print_remote_db_release(format: OutputFormat, release: &RemoteDbRelease) -> Result<()> {
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(release)?),
@@ -2356,7 +2520,7 @@ fn print_trash_restore_guidance(format: OutputFormat, entries: &[TrashedFileEntr
                     "Open Google Drive Trash while signed in as the owning account.",
                     "Search by file name or use the file ID in the Drive URL when available.",
                     "Select the item and choose Restore before recoverable_until.",
-                    "Run gdrive-optimize sync --full after restoring to refresh the local snapshot."
+                    "Run drive-warden sync --full after restoring to refresh the local snapshot."
                 ],
                 "matches": entries,
             }))?
@@ -2365,7 +2529,7 @@ fn print_trash_restore_guidance(format: OutputFormat, entries: &[TrashedFileEntr
             println!("trash restore guidance: matches={}", entries.len());
             println!("CLI restore is not implemented; restore these items manually in Google Drive Trash.");
             println!(
-                "After restore, run `gdrive-optimize sync --full` to refresh the local inventory."
+                "After restore, run `drive-warden sync --full` to refresh the local inventory."
             );
             for entry in entries {
                 println!(
@@ -2450,12 +2614,12 @@ fn generate_shell<G: Generator>(generator: G, command: &mut clap::Command, outpu
 fn decorate_sync_error(message: &str) -> String {
     let lower = message.to_ascii_lowercase();
     if lower.contains("410 gone") || lower.contains("invalid page token") {
-        format!("{message}. Rerun `gdrive-optimize sync --full` to rebuild the local snapshot.")
+        format!("{message}. Rerun `drive-warden sync --full` to rebuild the local snapshot.")
     } else if lower.contains("revoked")
         || lower.contains("expired")
         || lower.contains("invalid_grant")
     {
-        format!("{message}. Run `gdrive-optimize auth login` to refresh the session.")
+        format!("{message}. Run `drive-warden auth login` to refresh the session.")
     } else {
         message.to_string()
     }
@@ -2492,7 +2656,7 @@ mod tests {
                 last_remote_file_id: Some("remote-db".into()),
             },
             remote: RemoteDbEndpoint {
-                folder: Some(remote_file("folder", "gdrive-optimize-db")),
+                folder: Some(remote_file("folder", DEFAULT_REMOTE_DB_FOLDER_NAME)),
                 db_file: Some(remote_file("remote-db", "inventory.db")),
                 manifest_file: Some(remote_file("manifest", "inventory.db.manifest.json")),
                 manifest: Some(RemoteDbManifest {

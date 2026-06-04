@@ -13,26 +13,26 @@ Use this runbook when the live Google backend reports a revoked, expired, or oth
 1. Confirm you are using the intended live profile paths.
 
 ```bash
-cargo run -p gdrive-optimize -- db stats
+cargo run -p drive-warden -- db stats
 ```
 
 2. Log out to clear local session and token cache.
 
 ```bash
-cargo run -p gdrive-optimize -- auth logout
+cargo run -p drive-warden -- auth logout
 ```
 
 3. Log in again.
 
 ```bash
-cargo run -p gdrive-optimize -- auth login
+cargo run -p drive-warden -- auth login
 ```
 
 4. Re-run a read-only validation command.
 
 ```bash
-cargo run -p gdrive-optimize -- auth status
-cargo run -p gdrive-optimize -- sync
+cargo run -p drive-warden -- auth status
+cargo run -p drive-warden -- sync
 ```
 
 ## Notes

@@ -38,7 +38,7 @@ kind = "google"
 
 [database]
 path = "data/inventory.db"
-remote_folder_name = "gdrive-optimize-db"
+remote_folder_name = "drive-warden-db"
 
 [google]
 credentials_path = "data/credentials.json"
@@ -48,9 +48,9 @@ session_path = "data/google-session.json"
 
 Environment overrides:
 
-- `GDRIVE_OPTIMIZE_CREDENTIALS`
-- `GDRIVE_OPTIMIZE_TOKENS`
-- `GDRIVE_OPTIMIZE_GOOGLE_SESSION`
+- `DRIVE_WARDEN_CREDENTIALS`
+- `DRIVE_WARDEN_TOKENS`
+- `DRIVE_WARDEN_GOOGLE_SESSION`
 
 ## Scope model
 

@@ -7,8 +7,8 @@ use tempfile::TempDir;
 use crate::google_live::{
     copy_file_request, create_folder_request, drive_find_file_query, drive_folder_listing_query,
     escape_drive_query, filter_remote_files_by_prefix, inspect_exif_details_from_record,
-    is_retryable_google_error, retry_delay, trash_file_request, update_file_request,
-    upload_file_request,
+    is_retryable_google_error, rename_file_request, retry_delay, trash_file_request,
+    update_file_request, upload_file_request,
 };
 
 use super::*;
@@ -549,6 +549,11 @@ fn live_request_helpers_build_expected_payloads_and_exif_results() {
     assert_eq!(update.name.as_deref(), Some("inventory.db"));
     assert_eq!(update.mime_type.as_deref(), Some("application/vnd.sqlite3"));
     assert!(update.parents.is_none());
+
+    let rename = rename_file_request("drive-warden-db");
+    assert_eq!(rename.name.as_deref(), Some("drive-warden-db"));
+    assert!(rename.mime_type.is_none());
+    assert!(rename.parents.is_none());
 
     let trash = trash_file_request();
     assert_eq!(trash.trashed, Some(true));

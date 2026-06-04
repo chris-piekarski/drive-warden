@@ -126,7 +126,7 @@ impl GoogleDriveGateway {
                 if let Ok(session) = serde_json::from_str::<GoogleSessionState>(&contents) {
                     if !self.token_path.exists() {
                         return Err(CoreError::Message(format!(
-                            "stored Google session metadata exists but token cache `{}` is missing; run `gdrive-optimize auth login` again",
+                            "stored Google session metadata exists but token cache `{}` is missing; run `drive-warden auth login` again",
                             self.token_path.display()
                         )));
                     }
@@ -134,7 +134,7 @@ impl GoogleDriveGateway {
                 }
                 if serde_json::from_str::<StoredSession>(&contents).is_ok() {
                     return Err(CoreError::Message(
-                        "legacy Google session format detected; run `gdrive-optimize auth logout` then `gdrive-optimize auth login` to refresh the live session".into(),
+                        "legacy Google session format detected; run `drive-warden auth logout` then `drive-warden auth login` to refresh the live session".into(),
                     ));
                 }
                 Err(CoreError::Message(format!(
@@ -170,7 +170,7 @@ impl GoogleDriveGateway {
     async fn ensure_scope_internal(&self, scope: DriveScope) -> CoreResult<AuthSession> {
         let Some(session) = self.load_google_session_state()? else {
             return Err(CoreError::Message(
-                "not logged in; run `gdrive-optimize auth login` first".into(),
+                "not logged in; run `drive-warden auth login` first".into(),
             ));
         };
         let target_scope = max_scope(
@@ -289,7 +289,7 @@ impl MockDriveGateway {
 
     fn require_active_session(&self) -> CoreResult<AuthSession> {
         self.read_session()?.ok_or_else(|| {
-            CoreError::Message("not logged in; run `gdrive-optimize auth login` first".into())
+            CoreError::Message("not logged in; run `drive-warden auth login` first".into())
         })
     }
 
@@ -430,7 +430,7 @@ impl DriveGateway for MockDriveGateway {
     async fn ensure_scope(&self, scope: DriveScope) -> CoreResult<()> {
         let Some(mut session) = self.read_session()? else {
             return Err(CoreError::Message(
-                "not logged in; run `gdrive-optimize auth login` first".into(),
+                "not logged in; run `drive-warden auth login` first".into(),
             ));
         };
 
@@ -669,6 +669,28 @@ impl DriveGateway for MockDriveGateway {
         let metadata = remote_file.metadata.clone();
         self.store_mutation_state(&state)?;
         Ok(RemoteFileMetadata::from(metadata))
+    }
+
+    async fn rename_file(&self, file_id: &str, new_name: &str) -> CoreResult<RemoteFileMetadata> {
+        self.ensure_scope(DriveScope::Drive).await?;
+        let mut state = self.load_mutation_state()?;
+        if let Some(file) = state.created_files.iter_mut().find(|file| file.id == file_id) {
+            file.name = new_name.to_string();
+            file.modified_time = Some(Utc::now());
+            let metadata = file.clone();
+            self.store_mutation_state(&state)?;
+            return Ok(RemoteFileMetadata::from(metadata));
+        }
+        if let Some(remote_file) =
+            state.remote_files.iter_mut().find(|file| file.metadata.id == file_id)
+        {
+            remote_file.metadata.name = new_name.to_string();
+            remote_file.metadata.modified_time = Some(Utc::now());
+            let metadata = remote_file.metadata.clone();
+            self.store_mutation_state(&state)?;
+            return Ok(RemoteFileMetadata::from(metadata));
+        }
+        Err(CoreError::Message(format!("mock remote file `{file_id}` was not found")))
     }
 
     async fn download_file(&self, file_id: &str) -> CoreResult<Vec<u8>> {

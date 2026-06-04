@@ -1,4 +1,4 @@
-APP := gdrive-optimize
+APP := drive-warden
 CLI := cargo run -p $(APP) --
 
 BLUE := \033[38;2;100;200;255m
@@ -9,16 +9,16 @@ RESET := \033[0m
 .PHONY: help build build-release package-release install completions test test-unit test-integration test-functional test-acceptance test-doc test-all test-coverage lint fmt fmt-check clippy run sync report gdrive-sync fixtures-validate fixtures-update docs docs-serve clean clean-all setup check-deps
 
 help:
-	@printf "$(BLUE)%s$(RESET)\n" "gdrive-optimize developer targets"
+	@printf "$(BLUE)%s$(RESET)\n" "drive-warden developer targets"
 	@printf "$(AMBER)%s$(RESET)\n" "Build"
 	@printf "  $(GREEN)%-18s$(RESET) %s\n" "build" "cargo build --workspace"
 	@printf "  $(GREEN)%-18s$(RESET) %s\n" "build-release" "cargo build --workspace --release"
 	@printf "  $(GREEN)%-18s$(RESET) %s\n" "package-release" "archive the release binary into dist/"
-	@printf "  $(GREEN)%-18s$(RESET) %s\n" "install" "cargo install --path crates/gdrive-optimize"
+	@printf "  $(GREEN)%-18s$(RESET) %s\n" "install" "cargo install --path crates/drive-warden"
 	@printf "  $(GREEN)%-18s$(RESET) %s\n" "completions" "generate bash/zsh/fish completions"
 	@printf "$(AMBER)%s$(RESET)\n" "Test"
 	@printf "  $(GREEN)%-18s$(RESET) %s\n" "test" "unit + integration + functional"
-	@printf "  $(GREEN)%-18s$(RESET) %s\n" "test-acceptance" "cargo test -p gdrive-optimize --test acceptance_mock_end_to_end"
+	@printf "  $(GREEN)%-18s$(RESET) %s\n" "test-acceptance" "cargo test -p drive-warden --test acceptance_mock_end_to_end"
 	@printf "  $(GREEN)%-18s$(RESET) %s\n" "test-doc" "cargo test --workspace --doc"
 	@printf "  $(GREEN)%-18s$(RESET) %s\n" "test-coverage" "real workspace coverage with enforced threshold"
 	@printf "  $(GREEN)%-18s$(RESET) %s\n" "test-all" "lint + test + acceptance + docs"
@@ -48,7 +48,7 @@ package-release: build-release
 	printf "%s\n" "$$archive"
 
 install:
-	cargo install --path crates/gdrive-optimize
+	cargo install --path crates/drive-warden
 
 completions:
 	@mkdir -p dist/completions
@@ -67,16 +67,16 @@ test-integration:
 	cargo test -p gdrive-db --test path_cache_integration
 
 test-functional:
-	cargo test -p gdrive-optimize --test cli_sync_functional
-	cargo test -p gdrive-optimize --test cli_report_functional
-	cargo test -p gdrive-optimize --test cli_find_functional
-	cargo test -p gdrive-optimize --test cli_polish_functional
-	cargo test -p gdrive-optimize --test cli_unshare_functional
-	cargo test -p gdrive-optimize --test cli_trash_functional
-	cargo test -p gdrive-optimize --test cli_db_remote_functional
+	cargo test -p drive-warden --test cli_sync_functional
+	cargo test -p drive-warden --test cli_report_functional
+	cargo test -p drive-warden --test cli_find_functional
+	cargo test -p drive-warden --test cli_polish_functional
+	cargo test -p drive-warden --test cli_unshare_functional
+	cargo test -p drive-warden --test cli_trash_functional
+	cargo test -p drive-warden --test cli_db_remote_functional
 
 test-acceptance:
-	cargo test -p gdrive-optimize --test acceptance_mock_end_to_end
+	cargo test -p drive-warden --test acceptance_mock_end_to_end
 
 test-doc:
 	cargo test --workspace --doc
@@ -111,7 +111,7 @@ report:
 	$(CLI) report all
 
 fixtures-validate:
-	cargo test -p gdrive-optimize --test fixtures_validate -- --nocapture
+	cargo test -p drive-warden --test fixtures_validate -- --nocapture
 
 fixtures-update:
 	@echo "Explicit snapshot/fixture refresh helper implemented in repo scripts"

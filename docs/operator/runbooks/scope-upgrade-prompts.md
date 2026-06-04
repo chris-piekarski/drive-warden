@@ -23,22 +23,22 @@ Use this runbook when a live command needs broader Google Drive permissions than
 1. Start with a fresh read-only session.
 
 ```bash
-cargo run -p gdrive-optimize -- auth login
+cargo run -p drive-warden -- auth login
 ```
 
 2. Run the command that actually needs broader access.
 
 ```bash
-cargo run -p gdrive-optimize -- inspect exif <image-file-id>
-cargo run -p gdrive-optimize -- unshare --shared-with anyone --apply --yes
-cargo run -p gdrive-optimize -- trash --path '[orphan]/Coors/Model/*' --recursive --apply --yes
-cargo run -p gdrive-optimize -- db remote push --yes
+cargo run -p drive-warden -- inspect exif <image-file-id>
+cargo run -p drive-warden -- unshare --shared-with anyone --apply --yes
+cargo run -p drive-warden -- trash --path '[orphan]/Coors/Model/*' --recursive --apply --yes
+cargo run -p drive-warden -- db remote push --yes
 ```
 
 3. Confirm the broadened session only after the command succeeds.
 
 ```bash
-cargo run -p gdrive-optimize -- auth status
+cargo run -p drive-warden -- auth status
 ```
 
 ## Recovery

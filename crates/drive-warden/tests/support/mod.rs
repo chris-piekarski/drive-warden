@@ -44,9 +44,13 @@ pub fn write_mock_config(temp_dir: &TempDir, fixture_dir: &str) -> PathBuf {
     config_path
 }
 
-fn run_mock_command_with_config(temp_dir: &TempDir, config_path: &Path, args: &[&str]) -> Output {
+pub fn run_mock_command_with_config(
+    temp_dir: &TempDir,
+    config_path: &Path,
+    args: &[&str],
+) -> Output {
     let db_path = temp_db_path(temp_dir);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_gdrive-optimize"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_drive-warden"));
     command.current_dir(workspace_root());
     command.args([
         "--backend",
@@ -57,7 +61,7 @@ fn run_mock_command_with_config(temp_dir: &TempDir, config_path: &Path, args: &[
         db_path.to_str().expect("db path"),
     ]);
     command.args(args);
-    command.output().expect("run gdrive-optimize")
+    command.output().expect("run drive-warden")
 }
 
 #[allow(dead_code)]

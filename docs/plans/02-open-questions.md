@@ -14,7 +14,7 @@ No blocking open questions at this time.
 
 | ID | Decision | Date | Rationale |
 |----|----------|------|-----------|
-| OQ-1 | Binary name `gdrive-optimize` with `gdo` alias | 2026-05-28 | Operator approved |
+| OQ-1 | Binary name `drive-warden` with `gdo` alias | 2026-05-28 | Operator approved |
 | OQ-2 | `drive.metadata.readonly` at login; upgrade to `drive` on first write | 2026-05-28 | Least privilege until mutation needed |
 | OQ-3 | Local SQLite only in v1 | 2026-05-28 | Operator approved |
 | OQ-4 | Ignore already-trashed items in v1 — do not sync or analyze trashed inventory | 2026-05-28 | Recoverable `trash` moves are supported; permanent delete and trash inventory remain deferred |

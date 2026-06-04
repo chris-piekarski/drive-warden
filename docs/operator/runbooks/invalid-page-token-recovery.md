@@ -12,19 +12,19 @@ Google Drive change tokens can become unusable after enough time or state churn.
 2. Rebuild the snapshot from a full sync.
 
 ```bash
-cargo run -p gdrive-optimize -- sync --full
+cargo run -p drive-warden -- sync --full
 ```
 
 3. Verify the new committed token and snapshot health.
 
 ```bash
-cargo run -p gdrive-optimize -- db stats
+cargo run -p drive-warden -- db stats
 ```
 
 4. Re-run the discovery or reporting command you were working on.
 
 ```bash
-cargo run -p gdrive-optimize -- report summary -o reports/recovery
+cargo run -p drive-warden -- report summary -o reports/recovery
 ```
 
 ## Notes

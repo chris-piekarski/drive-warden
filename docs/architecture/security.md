@@ -9,7 +9,7 @@ flowchart LR
     OP[Operator] --> LOGIN[auth login]
     LOGIN --> OAUTH[Google OAuth]
     OAUTH --> TOKEN[data/tokens/*.json]
-    TOKEN --> CLI[gdrive-optimize]
+    TOKEN --> CLI[drive-warden]
     CLI --> WRITE{write command?}
     WRITE -->|yes| UPGRADE[incremental scope upgrade]
     WRITE -->|no| READ[metadata-only flow]

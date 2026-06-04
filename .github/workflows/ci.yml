@@ -70,5 +70,5 @@ jobs:
       - run: make package-release
       - uses: actions/upload-artifact@v4
         with:
-          name: gdrive-optimize-release
+          name: drive-warden-release
           path: dist/*.tar.gz

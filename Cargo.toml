@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/gdrive-optimize",
+    "crates/drive-warden",
     "crates/gdrive-core",
     "crates/gdrive-drive",
     "crates/gdrive-db",

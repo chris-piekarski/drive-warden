@@ -2330,7 +2330,10 @@ fn build_trash_plan(
 }
 
 fn classify_trash_reason(item: &InventoryItem, options: &TrashOptions) -> TrashReasonCode {
-    if !item.file.operator_can_share_manage {
+    if !item.file.owned_by_me {
+        // Google Drive trash requires ownership; writer/manage access is not enough.
+        TrashReasonCode::NotOwnedOrManageable
+    } else if !item.file.operator_can_share_manage {
         TrashReasonCode::NotOwnedOrManageable
     } else if item.file.mime_type == GOOGLE_DRIVE_FOLDER_MIME && !options.recursive {
         TrashReasonCode::FolderWithoutRecursive

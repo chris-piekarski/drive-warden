@@ -965,6 +965,35 @@ fn trash_plan_and_apply_respect_recursive_and_actionable_guards() {
 }
 
 #[test]
+fn trash_plan_skips_shared_but_manageable_files() {
+    let repository = TestRepository::default();
+    *repository.state.lock().expect("state") = Some(sample_state());
+    *repository.snapshot.lock().expect("snapshot") = FullSnapshot {
+        files: vec![FileRecord {
+            id: "shared-deck".into(),
+            name: "Luxonis_2021_Intel.pptx".into(),
+            mime_type: "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                .into(),
+            parents: vec!["root".into()],
+            owned_by_me: false,
+            operator_can_share_manage: true,
+            size: Some(1_000),
+            ..FileRecord::default()
+        }],
+    };
+
+    let plan = trash_plan(
+        &repository,
+        &InventoryQuery { name_contains: Some("Luxonis".into()), ..InventoryQuery::default() },
+        &TrashOptions::default(),
+    )
+    .expect("shared trash plan");
+    assert_eq!(plan.actionable_count, 0);
+    assert_eq!(plan.skipped_count, 1);
+    assert_eq!(plan.rows[0].reason, TrashReasonCode::NotOwnedOrManageable);
+}
+
+#[test]
 fn move_plan_and_apply_record_pending_and_applied_history() {
     let repository = TestRepository::default();
     *repository.state.lock().expect("state") = Some(sample_state());

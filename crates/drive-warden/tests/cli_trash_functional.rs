@@ -15,7 +15,7 @@ fn trash_preview_and_apply_remove_file_from_snapshot() {
         support::run_mock_command(&temp_dir, &["trash", "--path", "/Docs/PublicDeck.pdf"]);
     assert!(preview.status.success(), "stderr: {}", support::stderr(&preview));
     let stdout = support::stdout(&preview);
-    assert!(stdout.contains("trash preview:"));
+    assert!(stdout.contains("segregation preview:"));
     assert!(stdout.contains("public-file"));
     assert!(stdout.contains("reason=actionable"));
 
@@ -26,8 +26,8 @@ fn trash_preview_and_apply_remove_file_from_snapshot() {
     assert!(apply.status.success(), "stderr: {}", support::stderr(&apply));
     let stdout = support::stdout(&apply);
     assert!(stdout.contains("pre-mutation release: name=before-trash-"));
-    assert!(stdout.contains("trash applied: planned=1 applied=1 skipped=0"));
-    assert!(stdout.contains("post-apply sync:"));
+    assert!(stdout.contains("segregation applied: planned=1 applied=1 skipped=0"));
+    assert!(stdout.contains("post-apply roll call:"));
 
     let repository =
         SqliteInventoryRepository::new(support::temp_db_path(&temp_dir)).expect("repo");
@@ -44,14 +44,14 @@ fn trash_preview_and_apply_remove_file_from_snapshot() {
     let history = support::run_mock_command(&temp_dir, &["trash-history", "--limit", "5"]);
     assert!(history.status.success(), "stderr: {}", support::stderr(&history));
     let stdout = support::stdout(&history);
-    assert!(stdout.contains("trash history: rows=1"));
+    assert!(stdout.contains("segregation history: rows=1"));
     assert!(stdout.contains("/Docs/PublicDeck.pdf"));
     assert!(stdout.contains("recoverable_until="));
 
     let status = support::run_mock_command(&temp_dir, &["trash-status", "--within-days", "40"]);
     assert!(status.status.success(), "stderr: {}", support::stderr(&status));
     let stdout = support::stdout(&status);
-    assert!(stdout.contains("trash status: total=1 pending=1"));
+    assert!(stdout.contains("segregation status: total=1 pending=1"));
     assert!(stdout.contains("warnings=1"));
 
     let restore =
@@ -65,9 +65,9 @@ fn trash_preview_and_apply_remove_file_from_snapshot() {
     let doctor = support::run_mock_command(&temp_dir, &["doctor", "--within-days", "40"]);
     assert!(doctor.status.success(), "stderr: {}", support::stderr(&doctor));
     let stdout = support::stdout(&doctor);
-    assert!(stdout.contains("doctor: warnings="));
+    assert!(stdout.contains("warden rounds: warnings="));
     assert!(stdout.contains("trash: total=1 pending=1"));
-    assert!(stdout.contains("WARNING: 1 trash item(s) recoverability expires within 40 day(s)"));
+    assert!(stdout.contains("recoverability expires within 40 day(s)"));
 
     let releases = support::run_mock_command(&temp_dir, &["db", "remote", "release", "list"]);
     assert!(releases.status.success(), "stderr: {}", support::stderr(&releases));

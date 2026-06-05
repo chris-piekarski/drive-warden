@@ -1,6 +1,6 @@
 # drive-warden
 
-A Rust CLI to organize, audit, and clean up Google Drive without the web UI.
+**Google Drive Warden** — a Rust CLI that supervises your Drive like a strict facility warden: cells (folders), inmates (files), clearance (sharing), and segregation (trash)—all under security oversight, without the web UI.
 
 **Status:** live Google Drive backend supported for `My Drive`; Shared Drives remain deferred.
 
@@ -12,6 +12,7 @@ A Rust CLI to organize, audit, and clean up Google Drive without the web UI.
 | [Roadmap phases](docs/plans/01-roadmap-phases.md) | Implementation phases and deferred follow-on scope |
 | [Open questions](docs/plans/02-open-questions.md) | Decision log and review history |
 | [Getting started](docs/operator/getting-started.md) | Live and mock operator workflows |
+| [Exact duplicate cleanup](docs/operator/duplicate-cleanup.md) | Review-first workflow for MD5 duplicate groups |
 | [Google Cloud setup](docs/operator/google-cloud-setup.md) | Desktop OAuth client setup and live path configuration |
 
 ## Quick start (live Google backend)
@@ -25,6 +26,9 @@ make build
 ./target/debug/drive-warden auth login
 ./target/debug/drive-warden sync
 ./target/debug/drive-warden report all -o reports/live-run
+./target/debug/drive-warden report attention --manifest backups/shared-with-me/manifest.jsonl
+./target/debug/drive-warden backup shared-with-me --out backups/shared-with-me
+./target/debug/drive-warden shared declutter --manifest backups/shared-with-me/manifest.jsonl
 ./target/debug/drive-warden inspect exif <image-file-id>
 ./target/debug/drive-warden unshare --shared-with anyone
 ./target/debug/drive-warden unshare --shared-with anyone --retain-copy --apply --yes
@@ -45,7 +49,7 @@ make gdrive-sync
 
 `make gdrive-sync` syncs the configured SQLite DB with a private visible My Drive folder via `db remote sync`. It pushes when only the local DB exists, pulls when only the remote DB exists, and fails safely when both exist so you can choose `db remote push --yes` or `db remote pull --yes`. The default remote folder is `drive-warden-db`; `db remote rename-folder --yes` migrates the legacy folder name in place. The remote folder and files must not be shared; any shared permission triggers a `SECURITY ALERT` and aborts.
 
-`move` is preview-only by default, moves files or folders by changing their Drive parent, and supports `--to-root`, existing destinations by `--to-folder-id` or exact synced `--to-path`, and `--provision-missing` to create destination paths during apply. Use `move-history`, `trash-status`, `trash-history`, and `trash-restore` to review recoverability deadlines and manual restore guidance from the append-only trash history. Use `doctor` for a combined operator health check. Use `db remote release --name <tag> --yes` to create a named, non-overwriting DB snapshot beside the rolling remote DB copy, and `db remote release list` to discover releases.
+`move` is preview-only by default, transfers inmates between cells by changing their Drive parent, and supports `--to-root`, existing destinations by `--to-folder-id` or exact synced `--to-path`, and `--provision-missing` to create destination cells during apply. Use `move-history`, `trash-status`, `trash-history`, and `trash-restore` to review segregation deadlines and manual restore guidance from the append-only segregation history. Use `doctor` (warden rounds) for a combined facility health check. Use `db remote release --name <tag> --yes` to create a named, non-overwriting ledger snapshot beside the rolling remote DB copy, and `db remote release list` to discover releases.
 
 ## Quick start (mock backend)
 
@@ -61,7 +65,7 @@ make test-all
 
 The repository now ships both:
 
-- a live `My Drive` backend with installed-app OAuth, SQLite sync, reports, `find`, `inspect`, `inspect exif`, guarded `unshare --apply`, recoverable `trash --apply`, guarded parent-change `move --apply`, remote SQLite push/pull, and optional retained-copy backup before unshare
+- a live `My Drive` backend with installed-app OAuth, SQLite sync, Markdown warden briefings (`report`), terminal attention briefing (`report attention`), shared-with-me backup and declutter, `find`, `inspect`, `inspect exif`, guarded `unshare --apply`, recoverable `trash --apply`, guarded parent-change `move --apply`, remote SQLite push/pull, and optional retained-copy backup before unshare
 - the original mock backend, which remains the primary offline regression gate for CI, coverage, packaging, and acceptance flows
 - operator docs and recovery runbooks for live credentials, revoked tokens, invalid page tokens, scope upgrades, and sharing audits
 - release packaging, shell completions, and GitHub Actions CI via the `Makefile`

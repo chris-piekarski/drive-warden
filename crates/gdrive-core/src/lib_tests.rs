@@ -1618,12 +1618,7 @@ fn apply_move_orchestration_provisions_destination_and_records_history() {
 #[test]
 fn account_about_derives_storage_breakdown() {
     let about = AccountAbout::from_quota(
-        StorageQuota {
-            limit: Some(100),
-            usage: 90,
-            usage_in_drive: 70,
-            usage_in_drive_trash: 20,
-        },
+        StorageQuota { limit: Some(100), usage: 90, usage_in_drive: 70, usage_in_drive_trash: 20 },
         Some(5_000),
         Some(true),
     );

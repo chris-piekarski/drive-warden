@@ -40,31 +40,34 @@ fn render_account_about_executive_lines(about: &AccountAbout) -> String {
     let usage_line = if let Some(limit) = quota.limit {
         let free = quota.free_bytes().unwrap_or(0);
         format!(
-            "- Account storage used: **{}** / **{}** (**{}** free)\n",
+            "- Facility quota consumed: **{}** / **{}** (**{}** remaining)\n",
             format_bytes(quota.usage),
             format_bytes(limit),
             format_bytes(free),
         )
     } else {
         format!(
-            "- Account storage used: **{}** (unlimited or pooled plan)\n",
+            "- Facility quota consumed: **{}** (unlimited or pooled plan)\n",
             format_bytes(quota.usage),
         )
     };
     let trash_line = if let Some(pct) = about.trash_pct_of_limit() {
         format!(
-            "- Trash reclaimable: **{}** ({pct:.1}% of quota)\n",
+            "- Segregation hold (trash) reclaimable: **{}** ({pct:.1}% of quota)\n",
             format_bytes(about.trash_reclaimable_bytes),
         )
     } else {
-        format!("- Trash reclaimable: **{}**\n", format_bytes(about.trash_reclaimable_bytes),)
+        format!(
+            "- Segregation hold (trash) reclaimable: **{}**\n",
+            format_bytes(about.trash_reclaimable_bytes),
+        )
     };
     let max_upload_line = about
         .max_upload_size
-        .map(|size| format!("- Max upload size: **{}**\n", format_bytes(size)))
+        .map(|size| format!("- Intake size limit (max upload): **{}**\n", format_bytes(size)))
         .unwrap_or_default();
     format!(
-        "{usage_line}- Active Drive files: **{}**\n- Non-Drive Google usage: **{}**\n{trash_line}- Drive file usage (incl. trash): **{}**\n{max_upload_line}",
+        "{usage_line}- Active inmates (Drive files): **{}**\n- Off-block Google services usage: **{}**\n{trash_line}- Cell block usage (incl. trash): **{}**\n{max_upload_line}",
         format_bytes(about.active_drive_bytes),
         format_bytes(about.non_drive_bytes),
         format_bytes(quota.usage_in_drive),
@@ -79,7 +82,7 @@ fn render_account_about_metrics_rows(about: &AccountAbout) -> String {
     let trash_pct =
         about.trash_pct_of_limit().map(|pct| format!("{pct:.1}%")).unwrap_or_else(|| "n/a".into());
     format!(
-        "| Account usage | {} |\n| Account limit | {} |\n| Account free | {} |\n| Active Drive files | {} |\n| Non-Drive Google usage | {} |\n| Trash reclaimable | {} |\n| Trash % of quota | {} |\n| Drive usage (incl. trash) | {} |\n| Max upload size | {} |\n",
+        "| Facility quota consumed | {} |\n| Facility quota limit | {} |\n| Facility quota remaining | {} |\n| Active inmates | {} |\n| Off-block Google usage | {} |\n| Segregation hold reclaimable | {} |\n| Segregation hold % of quota | {} |\n| Cell block usage (incl. trash) | {} |\n| Intake size limit | {} |\n",
         format_bytes(quota.usage),
         limit,
         free,
@@ -94,8 +97,8 @@ fn render_account_about_metrics_rows(about: &AccountAbout) -> String {
 
 fn render_account_about_appendix(about: Option<&AccountAbout>) -> &'static str {
     match about {
-        Some(_) => "Snapshot byte totals may differ slightly from live Google account quota. Account figures are fetched live from Google Drive `about.get`.",
-        None => "This report is generated from the local SQLite snapshot. Live account settings were unavailable (not logged in or backend does not support about lookup).",
+        Some(_) => "Ledger byte totals may differ slightly from live facility quota. Quota figures are fetched live from Google Drive `about.get` under strict warden oversight.",
+        None => "This briefing is generated from the local intake ledger only. Live facility settings were unavailable (warden off duty or backend does not support about lookup).",
     }
 }
 
@@ -117,7 +120,7 @@ pub fn render_summary_report(
     let quota_metrics = account_about.map(render_account_about_metrics_rows).unwrap_or_default();
 
     format!(
-        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: summary\n---\n\n## Executive summary\n\n- Total files in snapshot: **{}**\n- Duplicate groups: **{}** covering **{}** files\n- Sharing findings: **{}**\n- Public links: **{}**\n- Stale files: **{}**\n- Total tracked bytes: **{}**\n{quota_executive}\n## Metrics dashboard\n\n| Metric | Value |\n|--------|-------|\n| Files | {} |\n| Duplicate groups | {} |\n| Sharing findings | {} |\n| Public links | {} |\n| Total bytes | {} |\n{quota_metrics}\n## Recommended actions\n\n1. Run `drive-warden find duplicates` to inspect duplicate candidates.\n2. Run `drive-warden find shared --shared-with anyone` to review public links.\n3. Run `drive-warden find large --min 1048576` to inspect large files.\n\n## Appendix\n\n{}\n",
+        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: summary\nwarden: drive-warden\n---\n\n## Warden briefing\n\n- Inmates on the intake ledger: **{}**\n- Identity collision groups: **{}** covering **{}** inmates\n- Clearance violations flagged: **{}**\n- Public-access breaches: **{}**\n- Idle inmates (stale): **{}**\n- Ledger byte total: **{}**\n{quota_executive}\n## Block census\n\n| Metric | Value |\n|--------|-------|\n| Inmates | {} |\n| Identity collision groups | {} |\n| Clearance violations | {} |\n| Public-access breaches | {} |\n| Ledger bytes | {} |\n{quota_metrics}\n## Security orders\n\n1. Run `drive-warden find duplicates` to inspect identity collision groups.\n2. Run `drive-warden find shared --shared-with anyone` to review public-access breaches.\n3. Run `drive-warden find large --min 1048576` to inspect the heaviest inmates.\n\n## Warden's ledger notes\n\n{}\n",
         items.len(),
         duplicates.len(),
         duplicate_files,
@@ -144,7 +147,7 @@ pub fn render_duplicates_report(
 
     for group in duplicates {
         details.push_str(&format!(
-            "### Group `{}` ({})\n\n| File ID | Name | Path |\n|---------|------|------|\n",
+            "### Collision group `{}` ({})\n\n| Inmate ID | Name | Cell path |\n|---------|------|-----------|\n",
             group.group_key,
             group.match_type.as_str()
         ));
@@ -158,7 +161,7 @@ pub fn render_duplicates_report(
     }
 
     format!(
-        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: duplicates\n---\n\n## Executive summary\n\n- Duplicate groups: **{}**\n\n## Metrics dashboard\n\n| Metric | Value |\n|--------|-------|\n| Duplicate groups | {} |\n\n## Detailed findings\n\n{}## Recommended actions\n\n1. Review grouped files above.\n2. Keep the preferred copy and remove or archive the rest later.\n\n## Appendix\n\nGroups are built by MD5 first, then by name+size when checksums are absent.\n",
+        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: duplicates\nwarden: drive-warden\n---\n\n## Warden briefing\n\n- Identity collision groups: **{}**\n\n## Block census\n\n| Metric | Value |\n|--------|-------|\n| Identity collision groups | {} |\n\n## Cell inspection\n\n{}## Security orders\n\n1. Review collision groups above and decide which inmate record to keep.\n2. Retain the preferred copy; archive or segregate the rest under warden supervision.\n\n## Warden's ledger notes\n\nGroups are built by MD5 first, then by name+size when checksums are absent.\n",
         duplicates.len(),
         duplicates.len(),
         details
@@ -171,8 +174,9 @@ pub fn render_sharing_report(
 ) -> String {
     let generated_at = Utc::now().to_rfc3339();
     let account_email = sync_state.map(|state| state.account.email.as_str()).unwrap_or("unknown");
-    let mut details =
-        String::from("| File ID | Name | Path | Kind | Target | Actionable |\n|---------|------|------|------|--------|------------|\n");
+    let mut details = String::from(
+        "| Inmate ID | Name | Cell path | Clearance kind | Target | Warden actionable |\n|---------|------|-----------|----------------|--------|-------------------|\n",
+    );
     for finding in findings {
         details.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} |\n",
@@ -186,7 +190,7 @@ pub fn render_sharing_report(
     }
 
     format!(
-        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: sharing\n---\n\n## Executive summary\n\n- Sharing findings: **{}**\n\n## Metrics dashboard\n\n| Metric | Value |\n|--------|-------|\n| Sharing findings | {} |\n\n## Detailed findings\n\n{}\n## Recommended actions\n\n1. Review public and external sharing rows first.\n2. Preview actionable rows with `drive-warden unshare --shared-with anyone` before applying changes.\n\n## Appendix\n\nRows include both actionable and informational sharing states.\n",
+        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: sharing\nwarden: drive-warden\n---\n\n## Warden briefing\n\n- Clearance violations flagged: **{}**\n\n## Block census\n\n| Metric | Value |\n|--------|-------|\n| Clearance violations | {} |\n\n## Cell inspection\n\n{}\n## Security orders\n\n1. Review public and external clearance rows first.\n2. Preview warden-actionable rows with `drive-warden unshare --shared-with anyone` before revoking access.\n\n## Warden's ledger notes\n\nRows include both warden-actionable and informational clearance states.\n",
         findings.len(),
         findings.len(),
         details
@@ -204,8 +208,9 @@ pub fn render_storage_report(
         account_about.map(render_account_about_executive_lines).unwrap_or_default();
     let quota_metrics = account_about.map(render_account_about_metrics_rows).unwrap_or_default();
 
-    let mut large_details =
-        String::from("| File ID | Name | Path | Bytes |\n|---------|------|------|-------|\n");
+    let mut large_details = String::from(
+        "| Inmate ID | Name | Cell path | Bytes |\n|---------|------|-----------|-------|\n",
+    );
     for finding in &storage.large_files {
         large_details.push_str(&format!(
             "| {} | {} | {} | {} |\n",
@@ -217,7 +222,7 @@ pub fn render_storage_report(
     }
 
     let mut stale_details = String::from(
-        "| File ID | Name | Path | Stale days |\n|---------|------|------|------------|\n",
+        "| Inmate ID | Name | Cell path | Idle days |\n|---------|------|-----------|-----------|\n",
     );
     for finding in &storage.stale_files {
         stale_details.push_str(&format!(
@@ -230,7 +235,7 @@ pub fn render_storage_report(
     }
 
     format!(
-        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: storage\n---\n\n## Executive summary\n\n- Total files: **{}**\n- Total tracked bytes: **{}**\n- Large file rows: **{}**\n- Stale file rows: **{}** (threshold: {} days)\n{quota_executive}\n## Metrics dashboard\n\n| Metric | Value |\n|--------|-------|\n| Files | {} |\n| Total bytes | {} |\n| Large files | {} |\n| Stale files | {} |\n{quota_metrics}\n## Detailed findings\n\n### Largest files\n\n{}\n### Stale files\n\n{}\n## Recommended actions\n\n1. Review the largest files for archive or cleanup.\n2. Review stale files that have not been touched in {}+ days.\n\n## Appendix\n\n{}\n",
+        "---\ngenerated_at: {generated_at}\naccount: {account_email}\nreport: storage\nwarden: drive-warden\n---\n\n## Warden briefing\n\n- Inmates on the intake ledger: **{}**\n- Ledger byte total: **{}**\n- Heavy inmate rows: **{}**\n- Idle inmate rows: **{}** (threshold: {} days)\n{quota_executive}\n## Block census\n\n| Metric | Value |\n|--------|-------|\n| Inmates | {} |\n| Ledger bytes | {} |\n| Heavy inmates | {} |\n| Idle inmates | {} |\n{quota_metrics}\n## Cell inspection\n\n### Heaviest inmates\n\n{}\n### Idle inmates\n\n{}\n## Security orders\n\n1. Review the heaviest inmates for archive or segregation.\n2. Review idle inmates untouched for {}+ days.\n\n## Warden's ledger notes\n\n{}\n",
         storage.total_files,
         storage.total_bytes,
         storage.large_files.len(),

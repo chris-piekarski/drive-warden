@@ -23,7 +23,7 @@ fn move_preview_and_invalid_destination_are_read_only() {
     );
     assert!(preview.status.success(), "stderr: {}", support::stderr(&preview));
     let stdout = support::stdout(&preview);
-    assert!(stdout.contains("move preview:"));
+    assert!(stdout.contains("cell transfer preview:"));
     assert!(stdout.contains("loose-file"));
     assert!(stdout.contains("reason=actionable"));
     assert!(stdout.contains("destination=/Archive"));
@@ -114,8 +114,8 @@ fn move_apply_reparents_file_and_records_history() {
     assert!(apply.status.success(), "stderr: {}", support::stderr(&apply));
     let stdout = support::stdout(&apply);
     assert!(stdout.contains("pre-mutation release: name=before-move-"));
-    assert!(stdout.contains("move applied: planned=1 applied=1 skipped=0"));
-    assert!(stdout.contains("post-apply sync:"));
+    assert!(stdout.contains("cell transfers applied: planned=1 applied=1 skipped=0"));
+    assert!(stdout.contains("post-apply roll call:"));
 
     let repository =
         SqliteInventoryRepository::new(support::temp_db_path(&temp_dir)).expect("repo");
@@ -153,7 +153,9 @@ fn move_apply_reparents_folder_without_reparenting_children() {
         &["move", "--path", "/Docs/Project", "--to-path", "/Archive", "--apply", "--yes"],
     );
     assert!(apply.status.success(), "stderr: {}", support::stderr(&apply));
-    assert!(support::stdout(&apply).contains("move applied: planned=1 applied=1 skipped=0"));
+    assert!(
+        support::stdout(&apply).contains("cell transfers applied: planned=1 applied=1 skipped=0")
+    );
 
     let repository =
         SqliteInventoryRepository::new(support::temp_db_path(&temp_dir)).expect("repo");

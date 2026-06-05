@@ -42,7 +42,7 @@ fn inspect_exif_upgrades_scope_and_db_commands_are_available() {
 
     let vacuum = support::run_mock_command(&temp_dir, &["db", "vacuum"]);
     assert!(vacuum.status.success(), "stderr: {}", support::stderr(&vacuum));
-    assert!(support::stdout(&vacuum).contains("vacuum complete:"));
+    assert!(support::stdout(&vacuum).contains("intake ledger compacted:"));
 }
 
 #[test]

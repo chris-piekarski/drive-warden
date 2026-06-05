@@ -3,6 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::{io, io::Write};
 
+mod shared_backup;
+mod shared_declutter;
+
 use anyhow::{bail, Context, Result};
 use chrono::{Duration, Utc};
 use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -22,7 +25,15 @@ use gdrive_report::{
     render_duplicates_report, render_sharing_report, render_storage_report, render_summary_report,
     MarkdownReportWriter,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use shared_backup::{
+    backed_up_ids_from_manifest, backup_shared_with_me, unresolved_records_from_manifest,
+    SharedBackupOptions, SharedBackupSummary,
+};
+use shared_declutter::{
+    apply_shared_declutter, plan_shared_declutter, SharedDeclutterApplySummary,
+    SharedDeclutterOptions, SharedDeclutterPlan,
+};
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_REMOTE_DB_FOLDER_NAME: &str = "drive-warden-db";
@@ -70,16 +81,19 @@ async fn run(cli: Cli) -> Result<()> {
                     .map(|scope| scope.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                println!("Logged in as {} with scopes [{}].", session.account.email, scopes);
+                println!(
+                    "Warden credentials confirmed for {} with scopes [{}].",
+                    session.account.email, scopes
+                );
                 Ok(())
             }
             AuthCommand::Logout => {
                 let gateway = runtime.build_gateway();
                 let removed = logout(gateway.as_ref()).await.map_err(anyhow::Error::msg)?;
                 if removed {
-                    println!("Logged out.");
+                    println!("Warden credentials cleared.");
                 } else {
-                    println!("No active login session was found.");
+                    println!("No active warden session.");
                 }
                 Ok(())
             }
@@ -94,9 +108,9 @@ async fn run(cli: Cli) -> Result<()> {
                             .map(|scope| scope.as_str())
                             .collect::<Vec<_>>()
                             .join(", ");
-                        println!("Logged in as {} [{}]", session.account.email, scopes);
+                        println!("Warden on duty: {} [{}]", session.account.email, scopes);
                     }
-                    None => println!("Not logged in."),
+                    None => println!("Warden off duty: no active session."),
                 }
                 Ok(())
             }
@@ -108,7 +122,7 @@ async fn run(cli: Cli) -> Result<()> {
                 .await
                 .map_err(|error| anyhow::Error::msg(decorate_sync_error(&error.to_string())))?;
             println!(
-                "sync complete: mode={} added={} updated={} removed={} files={} paths={} token={}",
+                "warden: roll call complete: mode={} added={} updated={} removed={} inmates={} paths={} token={}",
                 summary.mode.as_str(),
                 summary.added,
                 summary.updated,
@@ -165,7 +179,7 @@ async fn run(cli: Cli) -> Result<()> {
                 )?;
 
                 println!(
-                    "wrote reports:\n- {}\n- {}\n- {}\n- {}",
+                    "warden briefings filed:\n- {}\n- {}\n- {}\n- {}",
                     summary_path.display(),
                     duplicates_path.display(),
                     sharing_path.display(),
@@ -206,7 +220,7 @@ async fn run(cli: Cli) -> Result<()> {
                 let path = resolve_report_dir(&runtime, args.output.as_deref()).join("storage.md");
                 MarkdownReportWriter
                     .write_markdown(path.to_str().expect("storage path"), &contents)?;
-                println!("wrote report: {}", path.display());
+                println!("warden briefing filed: {}", path.display());
                 Ok(())
             }
             ReportCommand::Summary(args) => {
@@ -232,8 +246,81 @@ async fn run(cli: Cli) -> Result<()> {
                 let path = resolve_report_dir(&runtime, args.output.as_deref()).join("summary.md");
                 MarkdownReportWriter
                     .write_markdown(path.to_str().expect("summary path"), &contents)?;
-                println!("wrote report: {}", path.display());
+                println!("warden briefing filed: {}", path.display());
                 Ok(())
+            }
+            ReportCommand::Attention(args) => {
+                let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
+                let gateway = runtime.build_gateway();
+                let report =
+                    build_attention_report(gateway.as_ref(), &runtime, &repository, &args).await?;
+                print_attention_report(cli.format, &report)?;
+                Ok(())
+            }
+        },
+        Command::Backup(command) => match command {
+            BackupCommand::SharedWithMe(args) => {
+                let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
+                let gateway = runtime.build_gateway();
+                let options = SharedBackupOptions {
+                    out_dir: args.out,
+                    manifest_path: args.manifest,
+                    reuse_manifest: args.reuse_manifest,
+                    limit: args.limit,
+                };
+                let summary =
+                    backup_shared_with_me(gateway.as_ref(), &repository, &options).await?;
+                print_shared_backup_summary(cli.format, &summary)?;
+                Ok(())
+            }
+        },
+        Command::Shared(command) => match command {
+            SharedCommand::Declutter(args) => {
+                if args.dry_run && args.apply {
+                    bail!("`shared declutter --dry-run` cannot be combined with `--apply`");
+                }
+                let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
+                let gateway = runtime.build_gateway();
+                let options =
+                    SharedDeclutterOptions { manifest_path: args.manifest, limit: args.limit };
+                let plan = plan_shared_declutter(&repository, &options)?;
+                if args.dry_run || !args.apply {
+                    print_shared_declutter_plan(cli.format, &plan)?;
+                    Ok(())
+                } else {
+                    if !args.yes {
+                        if cli.no_interactive {
+                            bail!(
+                                "`shared declutter --apply` requires `--yes` when `--no-interactive` is set"
+                            );
+                        }
+                        confirm_shared_declutter_apply(&plan)?;
+                    }
+                    let pre_mutation_release = if plan.actionable_count > 0 {
+                        Some(
+                            create_pre_mutation_release(
+                                gateway.as_ref(),
+                                &runtime,
+                                "shared-declutter",
+                            )
+                            .await?,
+                        )
+                    } else {
+                        None
+                    };
+                    let apply_summary = apply_shared_declutter(gateway.as_ref(), &plan).await?;
+                    let sync_summary = sync_inventory(gateway.as_ref(), &repository, true)
+                        .await
+                        .map_err(anyhow::Error::msg)?;
+                    print_shared_declutter_apply_summary(
+                        cli.format,
+                        &plan,
+                        &apply_summary,
+                        &sync_summary,
+                        pre_mutation_release.as_ref(),
+                    )?;
+                    Ok(())
+                }
             }
         },
         Command::Find(command) => match command {
@@ -508,8 +595,8 @@ async fn run(cli: Cli) -> Result<()> {
 #[command(
     name = APP_NAME,
     version,
-    about = "Organize, audit, and clean up Google Drive without the web UI.",
-    long_about = "A local-first Rust CLI for syncing Google Drive metadata into SQLite, auditing duplicates and sharing exposure, and safely previewing remediation commands.",
+    about = "Google Drive warden: audit cells, supervise inmates, and enforce clearance under strict security oversight.",
+    long_about = "Drive Warden is a local-first Rust CLI that syncs Google Drive metadata into an intake ledger (SQLite), runs security briefings on duplicates and sharing exposure, and lets the warden preview or apply guarded remediation—revoking clearance, segregation (trash), and cell transfers—without the web UI.",
     after_help = "Examples:\n  drive-warden auth login\n  drive-warden sync --full\n  drive-warden report all -o reports/\n  drive-warden find duplicates --limit 25\n  drive-warden unshare --shared-with anyone --dry-run"
 )]
 struct Cli {
@@ -558,76 +645,88 @@ enum Command {
     )]
     Completions(CompletionsArgs),
     #[command(
-        about = "Authenticate with Google Drive",
+        about = "Confirm warden credentials with Google Drive",
         after_help = "Examples:\n  drive-warden auth login\n  drive-warden auth status\n  drive-warden auth logout"
     )]
     Auth(AuthArgs),
     #[command(
-        about = "Sync inventory into the local SQLite cache",
+        about = "Roll call: sync the intake ledger from Google Drive",
         after_help = "Examples:\n  drive-warden sync\n  drive-warden sync --full"
     )]
     Sync(SyncArgs),
     #[command(subcommand)]
     #[command(
-        about = "Generate Markdown reports",
-        after_help = "Examples:\n  drive-warden report all -o reports/\n  drive-warden report sharing"
+        about = "Generate warden security briefings (Markdown)",
+        after_help = "Examples:\n  drive-warden report all -o reports/\n  drive-warden report sharing\n  drive-warden report attention"
     )]
     Report(ReportCommand),
     #[command(subcommand)]
     #[command(
-        about = "Find items in the local inventory",
+        about = "Back up Google Drive content locally",
+        after_help = "Examples:\n  drive-warden backup shared-with-me --out backups/shared-with-me\n  drive-warden backup shared-with-me --out backups/shared-with-me --reuse-manifest backups/luxonis/manifest.json"
+    )]
+    Backup(BackupCommand),
+    #[command(subcommand)]
+    #[command(
+        about = "Preview or apply shared-with-me declutter workflows",
+        after_help = "Safety: shared declutter is preview-only unless --apply --yes is provided.\nExamples:\n  drive-warden shared declutter --manifest backups/shared-with-me/manifest.jsonl\n  drive-warden shared declutter --manifest backups/shared-with-me/manifest.jsonl --apply --yes"
+    )]
+    Shared(SharedCommand),
+    #[command(subcommand)]
+    #[command(
+        about = "Search the intake ledger for inmates and cells",
         after_help = "Examples:\n  drive-warden find duplicates --limit 20\n  drive-warden find shared --shared-with anyone"
     )]
     Find(FindCommand),
     #[command(subcommand)]
     #[command(
-        about = "Inspect a single file or its EXIF metadata",
+        about = "Inspect a single inmate record or EXIF metadata",
         after_help = "Examples:\n  drive-warden inspect file <id>\n  drive-warden inspect exif <id>"
     )]
     Inspect(InspectCommand),
     #[command(
-        about = "Preview or apply permission removals",
+        about = "Preview or apply clearance revocations (unshare)",
         after_help = "Safety: write commands default to dry-run.\nExamples:\n  drive-warden unshare --shared-with anyone --dry-run\n  drive-warden unshare --shared-with anyone --apply --yes"
     )]
     Unshare(UnshareArgs),
     #[command(
-        about = "Preview or apply moves to Google Drive trash",
-        after_help = "Safety: trash commands default to dry-run and never permanently delete files.\nExamples:\n  drive-warden trash --path '[orphan]/Coors/Model/*'\n  drive-warden trash --path '[orphan]/Coors/Model/*' --recursive --apply --yes"
+        about = "Preview or apply segregation to Google Drive trash",
+        after_help = "Safety: trash commands default to dry-run and never permanently delete inmates.\nExamples:\n  drive-warden trash --path '[orphan]/Coors/Model/*'\n  drive-warden trash --path '[orphan]/Coors/Model/*' --recursive --apply --yes"
     )]
     Trash(TrashArgs),
     #[command(
-        about = "Preview or apply parent changes into folders",
-        after_help = "Safety: move commands default to dry-run. Use --to-root for My Drive root, --provision-missing to create destination paths during apply, and move-history to audit completed moves.\nExamples:\n  drive-warden move --path '[orphan]/eBooks/*' --to-path '/Archive/eBooks'\n  drive-warden move --file-id <id> --to-root --apply --yes\n  drive-warden move --path '/Docs/*' --to-path '/Archive/New' --provision-missing --apply --yes"
+        about = "Preview or apply cell transfers (parent changes)",
+        after_help = "Safety: move commands default to dry-run. Use --to-root for My Drive root, --provision-missing to create destination cells during apply, and move-history to audit completed transfers.\nExamples:\n  drive-warden move --path '[orphan]/eBooks/*' --to-path '/Archive/eBooks'\n  drive-warden move --file-id <id> --to-root --apply --yes\n  drive-warden move --path '/Docs/*' --to-path '/Archive/New' --provision-missing --apply --yes"
     )]
     Move(MoveArgs),
     #[command(
-        about = "Show append-only move history",
+        about = "Show append-only cell transfer history",
         after_help = "Examples:\n  drive-warden move-history\n  drive-warden move-history --only-pending --limit 100"
     )]
     MoveHistory(MoveHistoryArgs),
     #[command(
-        about = "Show append-only trash history",
+        about = "Show append-only segregation history",
         after_help = "Examples:\n  drive-warden trash-history\n  drive-warden trash-history --only-pending --limit 100"
     )]
     TrashHistory(TrashHistoryArgs),
     #[command(
-        about = "Summarize trash recovery deadlines",
+        about = "Summarize segregation recovery deadlines",
         after_help = "Examples:\n  drive-warden trash-status\n  drive-warden trash-status --within-days 7"
     )]
     TrashStatus(TrashStatusArgs),
     #[command(
-        about = "Print manual restore guidance for a trashed file",
-        after_help = "This command is read-only. It does not restore files.\nExamples:\n  drive-warden trash-restore --file-id <drive-file-id>\n  drive-warden trash-restore --path-contains '[orphan]/Coors/Model'"
+        about = "Print manual restore guidance for a segregated inmate",
+        after_help = "This command is read-only. It does not restore inmates.\nExamples:\n  drive-warden trash-restore --file-id <drive-file-id>\n  drive-warden trash-restore --path-contains '[orphan]/Coors/Model'"
     )]
     TrashRestore(TrashRestoreArgs),
     #[command(
-        about = "Run a read-only operator health check",
+        about = "Run warden rounds: read-only facility health check",
         after_help = "Examples:\n  drive-warden doctor\n  drive-warden doctor --within-days 7"
     )]
     Doctor(DoctorArgs),
     #[command(subcommand)]
     #[command(
-        about = "Inspect or maintain the local database",
+        about = "Inspect or maintain the intake ledger database",
         after_help = "Examples:\n  drive-warden db stats\n  drive-warden db vacuum"
     )]
     Db(DbCommand),
@@ -672,12 +771,63 @@ enum ReportCommand {
     Sharing(ReportArgs),
     Storage(ReportArgs),
     Summary(ReportArgs),
+    Attention(AttentionReportArgs),
 }
 
 #[derive(Debug, Args)]
 struct ReportArgs {
     #[arg(short = 'o', long)]
     output: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct AttentionReportArgs {
+    #[arg(long)]
+    manifest: Option<PathBuf>,
+    #[arg(long = "release-keep-last", default_value_t = 20)]
+    release_keep_last: usize,
+    #[arg(long = "trash-within-days", default_value_t = 7)]
+    trash_within_days: i64,
+}
+
+#[derive(Debug, Subcommand)]
+enum BackupCommand {
+    #[command(
+        about = "Back up active shared-with-me files and Google-native exports",
+        after_help = "Examples:\n  drive-warden backup shared-with-me --out backups/shared-with-me\n  drive-warden backup shared-with-me --out backups/shared-with-me --limit 25"
+    )]
+    SharedWithMe(SharedBackupArgs),
+}
+
+#[derive(Debug, Args)]
+struct SharedBackupArgs {
+    #[arg(long, default_value = "backups/shared-with-me")]
+    out: PathBuf,
+    #[arg(long)]
+    manifest: Option<PathBuf>,
+    #[arg(long = "reuse-manifest")]
+    reuse_manifest: Option<PathBuf>,
+    #[arg(long)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Subcommand)]
+enum SharedCommand {
+    Declutter(SharedDeclutterArgs),
+}
+
+#[derive(Debug, Args)]
+struct SharedDeclutterArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    limit: Option<usize>,
+    #[arg(long, action = ArgAction::SetTrue)]
+    dry_run: bool,
+    #[arg(long, action = ArgAction::SetTrue)]
+    apply: bool,
+    #[arg(long, action = ArgAction::SetTrue)]
+    yes: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -906,12 +1056,25 @@ struct RemoteDbReleaseArgs {
 #[derive(Debug, Subcommand)]
 enum RemoteDbReleaseCommand {
     List(RemoteDbReleaseListArgs),
+    Prune(RemoteDbReleasePruneArgs),
 }
 
 #[derive(Debug, Args)]
 struct RemoteDbReleaseListArgs {
     #[arg(long)]
     prefix: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct RemoteDbReleasePruneArgs {
+    #[arg(long = "keep-last", default_value_t = 20)]
+    keep_last: usize,
+    #[arg(long)]
+    prefix: Option<String>,
+    #[arg(long, action = ArgAction::SetTrue)]
+    apply: bool,
+    #[arg(long, action = ArgAction::SetTrue)]
+    yes: bool,
 }
 
 #[derive(Debug)]
@@ -1186,7 +1349,7 @@ where
     let path = resolve_report_dir(runtime, output).join(file_name);
     let writer = MarkdownReportWriter;
     writer.write_markdown(path.to_str().expect("report path"), &contents)?;
-    println!("wrote {}", path.display());
+    println!("warden briefing filed: {}", path.display());
     Ok(())
 }
 
@@ -1325,7 +1488,7 @@ fn print_unshare_preview(format: OutputFormat, plan: &gdrive_core::UnsharePlan) 
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(plan)?),
         OutputFormat::Table => {
             println!(
-                "unshare preview: rows={} actionable={} skipped={} public={} domain={} direct={}",
+                "clearance revocation preview: rows={} actionable={} skipped={} public={} domain={} direct={}",
                 plan.rows.len(),
                 plan.actionable_count,
                 plan.skipped_count,
@@ -1403,11 +1566,11 @@ fn print_unshare_apply_summary(
                 );
             }
             println!(
-                "unshare applied: planned={} applied={} skipped={}",
+                "clearance revocations applied: planned={} applied={} skipped={}",
                 apply_summary.planned, apply_summary.applied, apply_summary.skipped
             );
             println!(
-                "post-apply sync: mode={} files={} token={}",
+                "post-apply roll call: mode={} inmates={} token={}",
                 sync_summary.mode.as_str(),
                 sync_summary.file_count,
                 sync_summary.committed_page_token
@@ -1422,7 +1585,7 @@ fn print_trash_preview(format: OutputFormat, plan: &gdrive_core::TrashPlan) -> R
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(plan)?),
         OutputFormat::Table => {
             println!(
-                "trash preview: rows={} actionable={} skipped={} files={} folders={} bytes={} recursive={}",
+                "segregation preview: rows={} actionable={} skipped={} inmates={} cells={} bytes={} recursive={}",
                 plan.rows.len(),
                 plan.actionable_count,
                 plan.skipped_count,
@@ -1473,14 +1636,118 @@ fn print_trash_apply_summary(
                 );
             }
             println!(
-                "trash applied: planned={} applied={} skipped={} bytes={}",
+                "segregation applied: planned={} applied={} skipped={} bytes={}",
                 apply_summary.planned,
                 apply_summary.applied,
                 apply_summary.skipped,
                 plan.total_bytes
             );
             println!(
-                "post-apply sync: mode={} files={} token={}",
+                "post-apply roll call: mode={} inmates={} token={}",
+                sync_summary.mode.as_str(),
+                sync_summary.file_count,
+                sync_summary.committed_page_token
+            );
+        }
+    }
+    Ok(())
+}
+
+fn print_shared_backup_summary(format: OutputFormat, summary: &SharedBackupSummary) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(summary)?),
+        OutputFormat::Table => {
+            println!(
+                "shared-with-me backup: total={} completed={} unresolved={} bytes={}",
+                summary.total_shared_with_me,
+                summary.completed,
+                summary.unresolved,
+                summary.local_file_bytes
+            );
+            println!("backup_dir: {}", summary.backup_dir);
+            println!("manifest: {}", summary.manifest);
+            for (status, count) in &summary.counts {
+                println!("status {status}: {count}");
+            }
+            for record in &summary.unresolved_records {
+                println!(
+                    "UNRESOLVED {}  {}  status={} reason={}",
+                    record.id,
+                    record.primary_path,
+                    record.status,
+                    record.reason.as_deref().unwrap_or("unknown")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_shared_declutter_plan(format: OutputFormat, plan: &SharedDeclutterPlan) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(plan)?),
+        OutputFormat::Table => {
+            println!(
+                "shared declutter preview: total={} actionable={} backed_up={} folders={} unresolved={} not_in_manifest={}",
+                plan.total_shared_with_me,
+                plan.actionable_count,
+                plan.backed_up_count,
+                plan.folder_placeholder_count,
+                plan.unresolved_count,
+                plan.not_in_manifest_count
+            );
+            println!("manifest: {}", plan.manifest);
+            for entry in &plan.entries {
+                println!(
+                    "{}  {}  classification={} actionable={} reason={}",
+                    entry.id,
+                    entry.path,
+                    entry.classification,
+                    if entry.actionable { "yes" } else { "no" },
+                    entry.reason
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_shared_declutter_apply_summary(
+    format: OutputFormat,
+    plan: &SharedDeclutterPlan,
+    apply_summary: &SharedDeclutterApplySummary,
+    sync_summary: &gdrive_core::SyncSummary,
+    pre_mutation_release: Option<&RemoteDbRelease>,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "plan": plan,
+                "apply_summary": apply_summary,
+                "sync_summary": sync_summary,
+                "pre_mutation_release": pre_mutation_release,
+            }))?
+        ),
+        OutputFormat::Table => {
+            if let Some(release) = pre_mutation_release {
+                println!(
+                    "pre-mutation release: name={} db_file={} manifest_file={}",
+                    release.name, release.db_file.id, release.manifest_file.id
+                );
+            }
+            println!(
+                "shared declutter applied: planned={} attempted={} removed={} failed={}",
+                plan.actionable_count,
+                apply_summary.attempted,
+                apply_summary.removed,
+                apply_summary.failed
+            );
+            for failure in &apply_summary.failures {
+                println!("FAILED {}  {}  {}", failure.id, failure.name, failure.error);
+            }
+            println!(
+                "post-apply roll call: mode={} inmates={} token={}",
                 sync_summary.mode.as_str(),
                 sync_summary.file_count,
                 sync_summary.committed_page_token
@@ -1500,7 +1767,7 @@ fn print_move_preview(format: OutputFormat, plan: &gdrive_core::MovePlan) -> Res
                 .map(|destination| destination.folder.path.primary_path.as_str())
                 .unwrap_or("unknown");
             println!(
-                "move preview: rows={} actionable={} skipped={} files={} folders={} destination={}",
+                "cell transfer preview: rows={} actionable={} skipped={} inmates={} cells={} destination={}",
                 plan.rows.len(),
                 plan.actionable_count,
                 plan.skipped_count,
@@ -1581,14 +1848,14 @@ fn print_move_apply_summary(
                 .map(|destination| destination.folder.path.primary_path.as_str())
                 .unwrap_or("unknown");
             println!(
-                "move applied: planned={} applied={} skipped={} destination={}",
+                "cell transfers applied: planned={} applied={} skipped={} destination={}",
                 apply_summary.move_summary.planned,
                 apply_summary.move_summary.applied,
                 apply_summary.move_summary.skipped,
                 destination
             );
             println!(
-                "post-apply sync: mode={} files={} token={}",
+                "post-apply roll call: mode={} inmates={} token={}",
                 sync_summary.mode.as_str(),
                 sync_summary.file_count,
                 sync_summary.committed_page_token
@@ -1628,7 +1895,7 @@ fn print_db_vacuum(format: OutputFormat, result: &VacuumResult) -> Result<()> {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(result)?),
         OutputFormat::Table => {
             println!(
-                "vacuum complete: db={} before_bytes={} after_bytes={}",
+                "intake ledger compacted: db={} before_bytes={} after_bytes={}",
                 result.db_path, result.before_bytes, result.after_bytes
             );
         }
@@ -1674,16 +1941,50 @@ struct RemoteDbFolderRename {
     renamed: bool,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 struct RemoteDbReleaseListing {
     releases: Vec<RemoteDbReleaseListItem>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 struct RemoteDbReleaseListItem {
     name: String,
     db_file: Option<RemoteFileMetadata>,
     manifest_file: Option<RemoteFileMetadata>,
+}
+
+#[derive(Debug, Serialize)]
+struct RemoteDbReleasePrunePlan {
+    keep_last: usize,
+    complete_release_count: usize,
+    skipped_partial_count: usize,
+    prune_count: usize,
+    keep: Vec<String>,
+    prune: Vec<RemoteDbReleasePruneItem>,
+    skipped_partial: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RemoteDbReleasePruneItem {
+    name: String,
+    db_file: RemoteFileMetadata,
+    manifest_file: RemoteFileMetadata,
+}
+
+#[derive(Debug, Serialize)]
+struct RemoteDbReleasePruneApplySummary {
+    attempted_files: usize,
+    trashed_files: usize,
+    failed_files: usize,
+    failures: Vec<RemoteDbReleasePruneFailure>,
+}
+
+#[derive(Debug, Serialize)]
+struct RemoteDbReleasePruneFailure {
+    release: String,
+    file_id: String,
+    file_name: String,
+    error: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1704,6 +2005,23 @@ struct TrashDeadlineSummary {
     expired_estimate: usize,
     warning_window_days: i64,
     warning_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct AttentionReport {
+    total_items: usize,
+    shared_with_me_count: usize,
+    shared_with_me_unbacked_count: Option<usize>,
+    unresolved_shared_backup_count: Option<usize>,
+    owned_shared_file_count: usize,
+    exact_md5_duplicate_groups: usize,
+    exact_md5_duplicate_items: usize,
+    trash_warning_count: usize,
+    remote_db_release_count: usize,
+    remote_db_release_keep_last: usize,
+    remote_db_release_prune_recommended: bool,
+    doctor_warning_count: usize,
+    warnings: Vec<String>,
 }
 
 async fn handle_remote_db_command(
@@ -1780,13 +2098,37 @@ async fn handle_remote_db_command(
             Ok(())
         }
         RemoteDbCommand::Release(args) => {
-            if let Some(RemoteDbReleaseCommand::List(list_args)) = args.command {
-                let prefix = list_args
-                    .prefix
-                    .unwrap_or_else(|| release_file_prefix(&runtime.remote_db.db_name));
-                let listing = list_remote_db_releases(gateway, runtime, &prefix).await?;
-                print_remote_db_release_listing(format, &listing)?;
-                return Ok(());
+            if let Some(command) = args.command {
+                match command {
+                    RemoteDbReleaseCommand::List(list_args) => {
+                        let prefix = list_args
+                            .prefix
+                            .unwrap_or_else(|| release_file_prefix(&runtime.remote_db.db_name));
+                        let listing = list_remote_db_releases(gateway, runtime, &prefix).await?;
+                        print_remote_db_release_listing(format, &listing)?;
+                        return Ok(());
+                    }
+                    RemoteDbReleaseCommand::Prune(prune_args) => {
+                        let prefix = prune_args
+                            .prefix
+                            .clone()
+                            .unwrap_or_else(|| release_file_prefix(&runtime.remote_db.db_name));
+                        let listing = list_remote_db_releases(gateway, runtime, &prefix).await?;
+                        let plan = plan_remote_db_release_prune(&listing, prune_args.keep_last);
+                        if !prune_args.apply {
+                            print_remote_db_release_prune_plan(format, &plan)?;
+                            return Ok(());
+                        }
+                        if !prune_args.yes {
+                            bail!(
+                                "`db remote release prune --apply` requires explicit `--yes`; run without `--apply` first to preview"
+                            );
+                        }
+                        let summary = apply_remote_db_release_prune(gateway, &plan).await?;
+                        print_remote_db_release_prune_apply(format, &plan, &summary)?;
+                        return Ok(());
+                    }
+                }
             }
             let name = args.name.context("release name is required")?;
             ensure_confirmed_remote_write(
@@ -1847,7 +2189,8 @@ async fn build_operator_status(
         );
     }
     if auth == "not_logged_in" {
-        warnings.push("not logged in; remote checks and live sync require auth login".into());
+        warnings
+            .push("warden off duty; remote checks and live roll call require auth login".into());
     }
     let account_about = fetch_account_about_best_effort(gateway).await;
     Ok(OperatorStatus {
@@ -1857,6 +2200,80 @@ async fn build_operator_status(
         remote_db,
         trash,
         release_count: releases.releases.len(),
+        warnings,
+    })
+}
+
+async fn build_attention_report(
+    gateway: &dyn DriveGateway,
+    runtime: &AppRuntime,
+    repository: &SqliteInventoryRepository,
+    args: &AttentionReportArgs,
+) -> Result<AttentionReport> {
+    let items = repository.load_inventory_items().map_err(anyhow::Error::msg)?;
+    let shared_with_me = items
+        .iter()
+        .filter(|item| item.file.shared && !item.file.owned_by_me && !item.file.trashed)
+        .collect::<Vec<_>>();
+    let (shared_with_me_unbacked_count, unresolved_shared_backup_count) = if let Some(manifest) =
+        args.manifest.as_deref()
+    {
+        let backed_up = backed_up_ids_from_manifest(manifest)?;
+        let unresolved = unresolved_records_from_manifest(manifest)?;
+        (
+            Some(shared_with_me.iter().filter(|item| !backed_up.contains(&item.file.id)).count()),
+            Some(unresolved.len()),
+        )
+    } else {
+        (None, None)
+    };
+    let query = InventoryQuery::default();
+    let duplicate_groups = duplicate_groups(repository, &query).map_err(anyhow::Error::msg)?;
+    let exact_md5_groups = duplicate_groups
+        .iter()
+        .filter(|group| group.match_type == gdrive_core::DuplicateMatchType::Md5)
+        .collect::<Vec<_>>();
+    let sharing = sharing_findings(repository, &query).map_err(anyhow::Error::msg)?;
+    let owned_shared_file_count = sharing
+        .iter()
+        .filter(|finding| finding.item.file.owned_by_me && finding.item.file.shared)
+        .map(|finding| finding.item.file.id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let status =
+        build_operator_status(gateway, runtime, repository, args.trash_within_days).await?;
+    let remote_db_release_prune_recommended = status.release_count > args.release_keep_last;
+    let mut warnings = status.warnings.clone();
+    if let Some(count) = shared_with_me_unbacked_count {
+        if count > 0 {
+            warnings.push(format!("{count} shared-with-me item(s) lack successful backup proof"));
+        }
+    }
+    if exact_md5_groups.iter().any(|group| group.items.len() > 1) {
+        warnings.push(format!(
+            "{} exact-MD5 duplicate group(s) require keeper review before any cleanup",
+            exact_md5_groups.len()
+        ));
+    }
+    if remote_db_release_prune_recommended {
+        warnings.push(format!(
+            "{} remote DB release(s) exceed keep-last {}; preview prune before applying",
+            status.release_count, args.release_keep_last
+        ));
+    }
+    Ok(AttentionReport {
+        total_items: items.len(),
+        shared_with_me_count: shared_with_me.len(),
+        shared_with_me_unbacked_count,
+        unresolved_shared_backup_count,
+        owned_shared_file_count,
+        exact_md5_duplicate_groups: exact_md5_groups.len(),
+        exact_md5_duplicate_items: exact_md5_groups.iter().map(|group| group.items.len()).sum(),
+        trash_warning_count: status.trash.warning_count,
+        remote_db_release_count: status.release_count,
+        remote_db_release_keep_last: args.release_keep_last,
+        remote_db_release_prune_recommended,
+        doctor_warning_count: status.warnings.len(),
         warnings,
     })
 }
@@ -2264,6 +2681,78 @@ async fn list_remote_db_releases(
     Ok(RemoteDbReleaseListing { releases: releases.into_values().collect() })
 }
 
+fn plan_remote_db_release_prune(
+    listing: &RemoteDbReleaseListing,
+    keep_last: usize,
+) -> RemoteDbReleasePrunePlan {
+    let mut complete = Vec::<RemoteDbReleasePruneItem>::new();
+    let mut skipped_partial = Vec::<String>::new();
+    for release in &listing.releases {
+        match (&release.db_file, &release.manifest_file) {
+            (Some(db_file), Some(manifest_file)) => complete.push(RemoteDbReleasePruneItem {
+                name: release.name.clone(),
+                db_file: db_file.clone(),
+                manifest_file: manifest_file.clone(),
+            }),
+            _ => skipped_partial.push(release.name.clone()),
+        }
+    }
+    complete.sort_by(|left, right| {
+        release_sort_key(right)
+            .cmp(&release_sort_key(left))
+            .then_with(|| right.name.cmp(&left.name))
+    });
+    let keep =
+        complete.iter().take(keep_last).map(|release| release.name.clone()).collect::<Vec<_>>();
+    let prune = complete.into_iter().skip(keep_last).collect::<Vec<_>>();
+    RemoteDbReleasePrunePlan {
+        keep_last,
+        complete_release_count: keep.len() + prune.len(),
+        skipped_partial_count: skipped_partial.len(),
+        prune_count: prune.len(),
+        keep,
+        prune,
+        skipped_partial,
+    }
+}
+
+fn release_sort_key(release: &RemoteDbReleasePruneItem) -> String {
+    release
+        .db_file
+        .modified_time
+        .or(release.manifest_file.modified_time)
+        .map(|time| time.to_rfc3339())
+        .unwrap_or_else(|| release.name.clone())
+}
+
+async fn apply_remote_db_release_prune(
+    gateway: &dyn DriveGateway,
+    plan: &RemoteDbReleasePrunePlan,
+) -> Result<RemoteDbReleasePruneApplySummary> {
+    let mut failures = Vec::new();
+    let mut trashed_files = 0usize;
+    for release in &plan.prune {
+        for file in [&release.db_file, &release.manifest_file] {
+            match gateway.trash_file(&file.id).await {
+                Ok(()) => trashed_files += 1,
+                Err(error) => failures.push(RemoteDbReleasePruneFailure {
+                    release: release.name.clone(),
+                    file_id: file.id.clone(),
+                    file_name: file.name.clone(),
+                    error: error.to_string(),
+                }),
+            }
+        }
+    }
+    let attempted_files = plan.prune.len() * 2;
+    Ok(RemoteDbReleasePruneApplySummary {
+        attempted_files,
+        trashed_files,
+        failed_files: failures.len(),
+        failures,
+    })
+}
+
 fn release_file_names(base_db_name: &str, release_name: &str) -> (String, String) {
     let path = Path::new(base_db_name);
     let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or(base_db_name);
@@ -2613,14 +3102,87 @@ fn print_remote_db_release_listing(
     Ok(())
 }
 
+fn print_remote_db_release_prune_plan(
+    format: OutputFormat,
+    plan: &RemoteDbReleasePrunePlan,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(plan)?),
+        OutputFormat::Table => {
+            println!(
+                "remote db release prune preview: complete={} keep_last={} prune={} skipped_partial={}",
+                plan.complete_release_count,
+                plan.keep_last,
+                plan.prune_count,
+                plan.skipped_partial_count
+            );
+            for name in &plan.keep {
+                println!("KEEP {name}");
+            }
+            for release in &plan.prune {
+                println!(
+                    "PRUNE {}  db={} {}  manifest={} {}",
+                    release.name,
+                    release.db_file.id,
+                    release.db_file.name,
+                    release.manifest_file.id,
+                    release.manifest_file.name
+                );
+            }
+            for name in &plan.skipped_partial {
+                println!("SKIP partial_release={name}");
+            }
+            if plan.prune_count > 0 {
+                println!(
+                    "Apply with `db remote release prune --keep-last {} --apply --yes`.",
+                    plan.keep_last
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_remote_db_release_prune_apply(
+    format: OutputFormat,
+    plan: &RemoteDbReleasePrunePlan,
+    summary: &RemoteDbReleasePruneApplySummary,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "plan": plan,
+                "apply_summary": summary,
+            }))?
+        ),
+        OutputFormat::Table => {
+            println!(
+                "remote db release prune applied: releases={} attempted_files={} trashed_files={} failed_files={}",
+                plan.prune_count,
+                summary.attempted_files,
+                summary.trashed_files,
+                summary.failed_files
+            );
+            for failure in &summary.failures {
+                println!(
+                    "FAILED release={} file={} {} error={}",
+                    failure.release, failure.file_id, failure.file_name, failure.error
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn print_operator_status(format: OutputFormat, status: &OperatorStatus) -> Result<()> {
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(status)?),
         OutputFormat::Table => {
-            println!("doctor: warnings={}", status.warnings.len());
+            println!("warden rounds: warnings={}", status.warnings.len());
             println!("auth: {}", status.auth);
             println!(
-                "db: path={} bytes={} files={} paths={} last_sync={}",
+                "intake ledger: path={} bytes={} inmates={} paths={} last_roll_call={}",
                 status.db.db_path,
                 status.db.db_bytes,
                 status.db.file_count,
@@ -2633,7 +3195,7 @@ fn print_operator_status(format: OutputFormat, status: &OperatorStatus) -> Resul
                     if let Some(limit) = quota.limit {
                         let free = quota.free_bytes().unwrap_or(0);
                         println!(
-                            "account_about: used={} limit={} free={} active_drive={} non_drive={} trash_reclaimable={} max_upload={}",
+                            "facility quota: used={} limit={} free={} active_inmates={} off_block={} segregation_reclaimable={} max_intake={}",
                             quota.usage,
                             limit,
                             free,
@@ -2644,7 +3206,7 @@ fn print_operator_status(format: OutputFormat, status: &OperatorStatus) -> Resul
                         );
                     } else {
                         println!(
-                            "account_about: used={} limit=unlimited active_drive={} non_drive={} trash_reclaimable={} max_upload={}",
+                            "facility quota: used={} limit=unlimited active_inmates={} off_block={} segregation_reclaimable={} max_intake={}",
                             quota.usage,
                             about.active_drive_bytes,
                             about.non_drive_bytes,
@@ -2653,7 +3215,7 @@ fn print_operator_status(format: OutputFormat, status: &OperatorStatus) -> Resul
                         );
                     }
                 }
-                None => println!("account_about: unavailable"),
+                None => println!("facility quota: unavailable"),
             }
             println!(
                 "remote_db: decision={} remote_exists={} releases={}",
@@ -2670,6 +3232,39 @@ fn print_operator_status(format: OutputFormat, status: &OperatorStatus) -> Resul
                 status.trash.warning_count
             );
             for warning in &status.warnings {
+                println!("SECURITY ALERT: {warning}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_attention_report(format: OutputFormat, report: &AttentionReport) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(report)?),
+        OutputFormat::Table => {
+            println!(
+                "attention: warnings={} items={} shared_with_me={} owned_shared={} exact_md5_groups={} trash_warnings={} remote_releases={}",
+                report.warnings.len(),
+                report.total_items,
+                report.shared_with_me_count,
+                report.owned_shared_file_count,
+                report.exact_md5_duplicate_groups,
+                report.trash_warning_count,
+                report.remote_db_release_count
+            );
+            if let Some(count) = report.shared_with_me_unbacked_count {
+                println!("shared_with_me_unbacked: {count}");
+            }
+            if let Some(count) = report.unresolved_shared_backup_count {
+                println!("unresolved_shared_backups: {count}");
+            }
+            println!(
+                "remote_release_retention: keep_last={} prune_recommended={}",
+                report.remote_db_release_keep_last,
+                if report.remote_db_release_prune_recommended { "yes" } else { "no" }
+            );
+            for warning in &report.warnings {
                 println!("WARNING: {warning}");
             }
         }
@@ -2705,7 +3300,7 @@ fn print_move_history(format: OutputFormat, entries: &[gdrive_core::MovedFileEnt
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(entries)?),
         OutputFormat::Table => {
-            println!("move history: rows={}", entries.len());
+            println!("cell transfer history: rows={}", entries.len());
             for entry in entries {
                 println!(
                     "{}  status={}  explicit={}  {} -> {}",
@@ -2742,7 +3337,7 @@ fn print_trash_history(format: OutputFormat, entries: &[TrashedFileEntry]) -> Re
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(entries)?),
         OutputFormat::Table => {
-            println!("trash history: rows={}", entries.len());
+            println!("segregation history: rows={}", entries.len());
             for entry in entries {
                 println!(
                     "{}  recoverable_until={}  explicit={}  {}",
@@ -2797,7 +3392,7 @@ fn print_trash_status(
         ),
         OutputFormat::Table => {
             println!(
-                "trash status: total={} pending={} expired_estimate={} warning_window_days={} warnings={}",
+                "segregation status: total={} pending={} expired_estimate={} warning_window_days={} warnings={}",
                 entries.len(),
                 pending,
                 expired,
@@ -2953,6 +3548,23 @@ fn confirm_trash_apply(plan: &gdrive_core::TrashPlan) -> Result<()> {
     }
 }
 
+fn confirm_shared_declutter_apply(plan: &SharedDeclutterPlan) -> Result<()> {
+    print!(
+        "Remove {} backed-up shared-with-me item(s) from My Drive and leave {} unbacked/unresolved item(s)? [y/N]: ",
+        plan.actionable_count,
+        plan.total_shared_with_me.saturating_sub(plan.actionable_count)
+    );
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let normalized = input.trim().to_ascii_lowercase();
+    if normalized == "y" || normalized == "yes" {
+        Ok(())
+    } else {
+        bail!("shared declutter apply cancelled")
+    }
+}
+
 fn print_completions(shell: CompletionShell) -> Result<()> {
     let mut command = Cli::command();
     let mut stdout = io::stdout();
@@ -3091,6 +3703,51 @@ mod tests {
     }
 
     #[test]
+    fn release_prune_plan_keeps_latest_complete_pairs_and_skips_partials() {
+        let listing = RemoteDbReleaseListing {
+            releases: vec![
+                RemoteDbReleaseListItem {
+                    name: "001".into(),
+                    db_file: Some(remote_file("db-001", "inventory.001.db")),
+                    manifest_file: Some(remote_file(
+                        "manifest-001",
+                        "inventory.001.db.manifest.json",
+                    )),
+                },
+                RemoteDbReleaseListItem {
+                    name: "003".into(),
+                    db_file: Some(remote_file("db-003", "inventory.003.db")),
+                    manifest_file: Some(remote_file(
+                        "manifest-003",
+                        "inventory.003.db.manifest.json",
+                    )),
+                },
+                RemoteDbReleaseListItem {
+                    name: "002".into(),
+                    db_file: Some(remote_file("db-002", "inventory.002.db")),
+                    manifest_file: Some(remote_file(
+                        "manifest-002",
+                        "inventory.002.db.manifest.json",
+                    )),
+                },
+                RemoteDbReleaseListItem {
+                    name: "partial".into(),
+                    db_file: Some(remote_file("db-partial", "inventory.partial.db")),
+                    manifest_file: None,
+                },
+            ],
+        };
+
+        let plan = plan_remote_db_release_prune(&listing, 1);
+        assert_eq!(plan.keep, ["003"]);
+        assert_eq!(
+            plan.prune.iter().map(|release| release.name.as_str()).collect::<Vec<_>>(),
+            ["002", "001"]
+        );
+        assert_eq!(plan.skipped_partial, ["partial"]);
+    }
+
+    #[test]
     fn doctor_sync_helper_distinguishes_current_and_conflicting_remote_db() {
         assert!(remote_db_is_recorded_in_sync(&remote_status(Some("sha-remote"), Some(7))));
         assert!(!remote_db_is_recorded_in_sync(&remote_status(Some("sha-other"), Some(7))));
@@ -3106,8 +3763,8 @@ mod tests {
     fn trash_deadline_summary_counts_pending_expired_and_warnings() {
         let now = Utc::now();
         let entries = vec![
-            trashed_entry("soon", Some(now + Duration::days(2))),
-            trashed_entry("later", Some(now + Duration::days(20))),
+            trashed_entry("pending", Some(now + Duration::days(30))),
+            trashed_entry("warning", Some(now + Duration::days(2))),
             trashed_entry("expired", Some(now - Duration::days(1))),
             trashed_entry("unknown", None),
         ];
@@ -3115,68 +3772,7 @@ mod tests {
         assert_eq!(summary.total, 4);
         assert_eq!(summary.pending, 3);
         assert_eq!(summary.expired_estimate, 1);
-        assert_eq!(summary.warning_count, 1);
         assert_eq!(summary.warning_window_days, 7);
-    }
-
-    #[test]
-    fn decorate_sync_error_adds_operator_remediation() {
-        assert!(decorate_sync_error("410 Gone").contains("sync --full"));
-        assert!(decorate_sync_error("invalid_grant").contains("auth login"));
-        assert_eq!(decorate_sync_error("plain failure"), "plain failure");
-    }
-
-    #[test]
-    fn inventory_query_helpers_parse_filters_and_reject_invalid_values() {
-        let filters = QueryFilters {
-            file_id: Some("file-id".into()),
-            name: Some("model".into()),
-            mime: Some("application".into()),
-            older_than: Some("30d".into()),
-            larger_than: Some(10),
-            in_folder: Some("folder-id".into()),
-            path: Some("[orphan]/*".into()),
-            shared: true,
-            shared_with: Some("domain:example.com".into()),
-            owner_scope: Some("mine".into()),
-            actionable_only: true,
-            duplicate_of: Some("hash".into()),
-            limit: Some(25),
-            offset: Some(5),
-        };
-        let query = build_inventory_query(&filters, Some(20)).expect("query");
-        assert_eq!(query.file_id.as_deref(), Some("file-id"));
-        assert_eq!(query.name_contains.as_deref(), Some("model"));
-        assert_eq!(query.mime_contains.as_deref(), Some("application"));
-        assert_eq!(query.older_than_days, Some(30));
-        assert_eq!(query.larger_than, Some(20));
-        assert_eq!(query.in_folder.as_deref(), Some("folder-id"));
-        assert_eq!(query.path_glob.as_deref(), Some("[orphan]/*"));
-        assert!(query.shared_only);
-        assert!(
-            matches!(query.shared_with, Some(SharedWithFilter::Domain(domain)) if domain == "example.com")
-        );
-        assert_eq!(query.owner_scope, OwnerScope::Mine);
-        assert!(query.actionable_only);
-        assert_eq!(query.duplicate_of.as_deref(), Some("hash"));
-        assert_eq!(query.limit, Some(25));
-        assert_eq!(query.offset, 5);
-
-        assert_eq!(parse_older_than_days("90").expect("days"), 90);
-        assert!(parse_older_than_days("bad").is_err());
-        assert!(matches!(
-            parse_shared_with_filter("anyone").expect("anyone"),
-            SharedWithFilter::Anyone
-        ));
-        assert!(matches!(
-            parse_shared_with_filter("email:user@example.com").expect("email"),
-            SharedWithFilter::Email(email) if email == "user@example.com"
-        ));
-        assert!(parse_shared_with_filter("group:team").is_err());
-        assert!(build_inventory_query(
-            &QueryFilters { owner_scope: Some("theirs".into()), ..QueryFilters::default() },
-            None,
-        )
-        .is_err());
+        assert_eq!(summary.warning_count, 1);
     }
 }

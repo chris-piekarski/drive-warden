@@ -11,7 +11,7 @@ fn sync_bootstrap_then_delta_against_mock_backend() {
     let stdout = support::stdout(&first_sync);
     assert!(stdout.contains("mode=full"));
     assert!(stdout.contains("added=12"));
-    assert!(stdout.contains("files=12"));
+    assert!(stdout.contains("inmates=12"));
     assert!(stdout.contains("paths=12"));
     assert!(stdout.contains("token=start-token-2"));
 

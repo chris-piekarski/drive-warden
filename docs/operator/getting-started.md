@@ -1,15 +1,19 @@
 # Getting Started
 
-`drive-warden` is a local-first CLI for auditing and cleaning up Google Drive metadata from a SQLite snapshot. The live Google backend now supports `My Drive` end to end, while the fixture-backed mock backend remains the offline verification path for CI and safe experimentation.
+**Drive Warden** is a local-first CLI for auditing and supervising Google Drive metadata from an intake ledger (SQLite snapshot). The warden runs security briefings, enforces clearance rules, and applies guarded remediation—without the web UI. The live Google backend supports `My Drive` end to end; the fixture-backed mock backend remains the offline verification path for CI and safe experimentation.
 
 ## Supported workflows
 
 - live Google OAuth login/logout/status for a Desktop OAuth client
-- bootstrap and delta sync into SQLite
-- `find`, `report`, `inspect file`, and `inspect exif`
+- bootstrap and delta sync into SQLite (roll call)
+- Markdown warden briefings (`report all`, `report summary`, etc.) and terminal triage (`report attention`)
+- `find`, `inspect file`, and `inspect exif`
+- `backup shared-with-me` local archive with resumable `manifest.jsonl`
+- `shared declutter` preview and guarded apply (remove backed-up shared-with-you files from My Drive)
 - `unshare` preview plus guarded `unshare --apply`
 - `trash` preview plus guarded, recoverable `trash --apply`
 - `move` preview plus guarded parent changes into existing folders
+- warden rounds (`doctor`) and exact-duplicate review guidance ([duplicate cleanup](duplicate-cleanup.md))
 - local database inspection with `db stats` and `db vacuum`
 - remote SQLite push/pull with `db remote` and `make gdrive-sync`
 
@@ -39,6 +43,7 @@ If you want to use the default local layout, place your Google Desktop OAuth cli
 cargo run -p drive-warden -- auth login
 cargo run -p drive-warden -- sync
 cargo run -p drive-warden -- report all -o reports/live-run
+cargo run -p drive-warden -- report attention --manifest backups/shared-with-me/manifest.jsonl
 ```
 
 Inspect a specific file or image:
@@ -57,6 +62,18 @@ cargo run -p drive-warden -- unshare --shared-with anyone --retain-copy --apply 
 ```
 
 The CLI performs a follow-up full sync after a successful `unshare --apply` so the local snapshot reflects the new permission state immediately.
+
+Back up shared-with-me content before removing it from your My Drive:
+
+```bash
+cargo run -p drive-warden -- backup shared-with-me --out backups/shared-with-me
+cargo run -p drive-warden -- shared declutter --manifest backups/shared-with-me/manifest.jsonl
+cargo run -p drive-warden -- shared declutter --manifest backups/shared-with-me/manifest.jsonl --apply --yes
+```
+
+`backup shared-with-me` writes files under `--out` (default `backups/shared-with-me`) and appends one JSON object per line to `manifest.jsonl` in that directory unless `--manifest` points elsewhere. Re-runs skip rows already marked successful (`downloaded`, `exported`, `copied`, `recovered_export`, or `folder` placeholder directories). Use `--reuse-manifest` to copy bytes from a prior JSON manifest when filenames match.
+
+`shared declutter` is preview-only by default. Apply removes only **files** that have a successful backup manifest row from your My Drive (via `removeParents=root`). It does not trash the owner's copy, does not remove folder placeholders, and skips items missing from the manifest or marked unresolved (for example Google Earth projects). When actionable rows exist, `--apply --yes` creates a `before-shared-declutter-...` remote DB release and runs a full sync afterward.
 
 Use `--retain-copy` when you need the CLI to create a private backup copy in `My Drive` before removing the targeted sharing permission. The default destination is a new retained-copy folder under `My Drive`; use `--backup-root-id <folder-id>` to place the auto-created run folder under a specific existing folder instead.
 
@@ -81,7 +98,9 @@ cargo run -p drive-warden -- doctor
 
 Every applied trash move is recorded in the append-only `trashed_file_history` table. Recursive folder trash records descendant snapshots too, so operators can still see file IDs, paths, trash time, and estimated recovery deadlines after sync removes those items from the active `files` inventory.
 
-`trash-status` summarizes pending and estimated-expired trash history rows and warns when recoverability expires within the requested window. `trash-history` lists individual rows without requiring raw SQL. `trash-restore` is read-only and prints manual Google Drive restore guidance for matching history rows. `doctor` combines DB stats, remote DB state, release count, and trash deadline warnings in one operator check.
+`trash-status` summarizes pending and estimated-expired segregation history rows and warns when recoverability expires within the requested window. `trash-history` lists individual rows without requiring raw SQL. `trash-restore` is read-only and prints manual Google Drive restore guidance for matching history rows. `doctor` (warden rounds) combines intake ledger stats, facility quota, remote DB state, release count, and segregation deadline warnings in one check.
+
+For exact-MD5 duplicate groups, follow the review-first workflow in [duplicate-cleanup.md](duplicate-cleanup.md) before any `trash --apply`.
 
 ## Configuring live paths
 
@@ -145,9 +164,11 @@ Each database has a stable `db_instance_id` and remote sync generation stored in
 
 - `auth login` requests `drive.metadata.readonly`
 - `inspect exif` upgrades to `drive.readonly` if the current session is narrower
+- `backup shared-with-me` upgrades to `drive.readonly` when export or download is required
 - `unshare --apply` upgrades to `drive` if the current session is narrower
 - `trash --apply` upgrades to `drive` if the current session is narrower
 - `move --apply` upgrades to `drive` if the current session is narrower
+- `shared declutter --apply` upgrades to `drive` if the current session is narrower
 - `db remote push` upgrades to `drive`; `db remote pull` may upgrade to `drive.readonly`
 
 If the broader consent flow is declined, the narrower session remains on disk and the command fails safely.
@@ -175,10 +196,10 @@ cargo run -p drive-warden -- \
 
 ## Output modes
 
-- default output is a stable plain-text format for terminals
-- `--format json` emits machine-readable output for `find`, `inspect`, `unshare`, `trash`, `move`, and `db`
+- default output is a stable plain-text format for terminals (warden console voice on key commands)
+- `--format json` emits machine-readable output for `find`, `inspect`, `unshare`, `trash`, `move`, `backup`, `shared declutter`, `report attention`, and `db`
 - `--no-interactive` disables prompts that would block unattended automation
-- `report *` commands always write Markdown files to disk
+- `report summary|duplicates|sharing|storage|all` write Markdown warden briefings to disk; `report attention` prints to stdout only
 
 ## Shell completions
 

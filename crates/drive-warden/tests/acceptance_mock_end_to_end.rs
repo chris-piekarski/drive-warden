@@ -27,7 +27,7 @@ fn first_time_mock_operator_flow_completes() {
     assert!(report.status.success(), "stderr: {}", support::stderr(&report));
     assert!(fs::read_to_string(reports_dir.join("summary.md"))
         .expect("summary report")
-        .contains("Executive summary"));
+        .contains("Warden briefing"));
 
     let inspect = support::run_mock_command(&temp_dir, &["inspect", "file", "public-file"]);
     assert!(inspect.status.success(), "stderr: {}", support::stderr(&inspect));
@@ -55,7 +55,7 @@ fn first_time_mock_operator_flow_completes() {
 
     let logout = support::run_mock_command(&temp_dir, &["auth", "logout"]);
     assert!(logout.status.success(), "stderr: {}", support::stderr(&logout));
-    assert!(support::stdout(&logout).contains("Logged out."));
+    assert!(support::stdout(&logout).contains("Warden credentials cleared."));
 }
 
 #[test]

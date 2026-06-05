@@ -531,6 +531,70 @@ impl DriveGateway for GoogleDriveGateway {
         Ok(bytes.to_vec())
     }
 
+    async fn export_file(&self, file_id: &str, mime_type: &str) -> CoreResult<Vec<u8>> {
+        let session = self.ensure_scope_internal(DriveScope::DriveReadonly).await?;
+        let hub = self.build_hub().await?;
+        let context = format!("exporting Google Drive file `{file_id}` as `{mime_type}`");
+        let response = google_request!(&context, {
+            hub.files()
+                .export(file_id, mime_type)
+                .add_scopes(oauth_scope_urls(highest_active_scope(&session.active_scopes)))
+                .doit()
+                .await
+        })?;
+        let body = response.into_body();
+        let bytes = common::to_bytes(body)
+            .await
+            .ok_or_else(|| CoreError::Message("Google Drive export body was empty".into()))?;
+        Ok(bytes.to_vec())
+    }
+
+    async fn download_url(&self, url: &str) -> CoreResult<Vec<u8>> {
+        let session = self.ensure_scope_internal(DriveScope::DriveReadonly).await?;
+        let hub = self.build_hub().await?;
+        let context = format!("downloading authenticated Google URL `{url}`");
+        let scope_urls = oauth_scope_urls(highest_active_scope(&session.active_scopes));
+        let access_token =
+            hub.auth.get_token(&scope_urls).await.map_err(map_token_error)?.ok_or_else(|| {
+                CoreError::Message("Google OAuth token missing access token".into())
+            })?;
+        let client = Client::new();
+        let parsed_url = reqwest::Url::parse(url)
+            .map_err(|error| CoreError::Message(format!("{context} URL was invalid: {error}")))?;
+        let request = || client.get(parsed_url.clone()).bearer_auth(access_token.clone());
+        execute_reqwest_bytes_request(&context, request).await
+    }
+
+    async fn remove_my_drive_parent(&self, file_id: &str) -> CoreResult<RemoteFileMetadata> {
+        let session = self.ensure_scope_internal(DriveScope::Drive).await?;
+        let hub = self.build_hub().await?;
+        let context = format!("removing Google Drive file `{file_id}` from My Drive");
+        let scope_urls = oauth_scope_urls(highest_active_scope(&session.active_scopes));
+        let access_token =
+            hub.auth.get_token(&scope_urls).await.map_err(map_token_error)?.ok_or_else(|| {
+                CoreError::Message("Google OAuth token missing access token".into())
+            })?;
+        let client = Client::new();
+        let url = reqwest::Url::parse_with_params(
+            &format!("https://www.googleapis.com/drive/v3/files/{file_id}"),
+            &[
+                ("removeParents", "root"),
+                ("supportsAllDrives", "false"),
+                ("fields", FILE_ITEM_FIELDS),
+            ],
+        )
+        .map_err(|error| CoreError::Message(format!("{context} URL was invalid: {error}")))?;
+        let request = || {
+            client
+                .patch(url.clone())
+                .bearer_auth(access_token.clone())
+                .header("content-type", "application/json")
+                .body("{}")
+        };
+        let file = execute_reqwest_json_request::<GoogleFile, _>(&context, request).await?;
+        Ok(RemoteFileMetadata::from(map_drive_file(file)?))
+    }
+
     async fn get_account_about(&self) -> CoreResult<AccountAbout> {
         let session = self.ensure_scope_internal(DriveScope::MetadataReadonly).await?;
         let hub = self.build_hub().await?;
@@ -610,6 +674,55 @@ where
                 return serde_json::from_str::<T>(&body).map_err(|error| {
                     CoreError::Message(format!("{context} returned invalid JSON: {error}"))
                 });
+            }
+            Ok(Err(error)) if attempt < GOOGLE_REQUEST_MAX_ATTEMPTS && error.is_timeout() => {
+                sleep(retry_delay(attempt)).await;
+                attempt += 1;
+            }
+            Ok(Err(error)) => {
+                return Err(CoreError::Message(format!("{context} failed: {error}")));
+            }
+            Err(_) if attempt < GOOGLE_REQUEST_MAX_ATTEMPTS => {
+                sleep(retry_delay(attempt)).await;
+                attempt += 1;
+            }
+            Err(_) => {
+                return Err(CoreError::Message(format!(
+                    "{context} timed out after {} seconds",
+                    GOOGLE_REQUEST_TIMEOUT.as_secs()
+                )));
+            }
+        }
+    }
+}
+
+async fn execute_reqwest_bytes_request<F>(context: &str, mut operation: F) -> CoreResult<Vec<u8>>
+where
+    F: FnMut() -> reqwest::RequestBuilder,
+{
+    let mut attempt = 1;
+    loop {
+        let request = operation();
+        match timeout(GOOGLE_REQUEST_TIMEOUT, request.send()).await {
+            Ok(Ok(response))
+                if attempt < GOOGLE_REQUEST_MAX_ATTEMPTS
+                    && is_retryable_reqwest_status(response.status()) =>
+            {
+                sleep(retry_delay(attempt)).await;
+                attempt += 1;
+            }
+            Ok(Ok(response)) => {
+                let status = response.status();
+                if !status.is_success() {
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(CoreError::Message(format!(
+                        "{context} failed with HTTP {status}: {body}"
+                    )));
+                }
+                let bytes = response.bytes().await.map_err(|error| {
+                    CoreError::Message(format!("{context} response could not be read: {error}"))
+                })?;
+                return Ok(bytes.to_vec());
             }
             Ok(Err(error)) if attempt < GOOGLE_REQUEST_MAX_ATTEMPTS && error.is_timeout() => {
                 sleep(retry_delay(attempt)).await;

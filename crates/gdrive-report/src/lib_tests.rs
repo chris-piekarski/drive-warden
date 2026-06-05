@@ -48,11 +48,12 @@ fn summary_report_includes_live_account_about_when_present() {
 
     let report = render_summary_report(None, &[], &[], &[], &storage, Some(&about));
 
-    assert!(report.contains("Account storage used:"));
-    assert!(report.contains("Active Drive files:"));
-    assert!(report.contains("Non-Drive Google usage:"));
-    assert!(report.contains("Trash reclaimable:"));
-    assert!(report.contains("Max upload size:"));
+    assert!(report.contains("Warden briefing"));
+    assert!(report.contains("Facility quota consumed:"));
+    assert!(report.contains("Active inmates (Drive files):"));
+    assert!(report.contains("Off-block Google services usage:"));
+    assert!(report.contains("Segregation hold (trash) reclaimable:"));
+    assert!(report.contains("Intake size limit (max upload):"));
     assert!(report.contains("about.get"));
 }
 
@@ -79,5 +80,5 @@ fn storage_report_notes_unlimited_quota() {
     let report = render_storage_report(None, &storage, Some(&about));
 
     assert!(report.contains("unlimited or pooled plan"));
-    assert!(report.contains("| Account limit | unlimited |"));
+    assert!(report.contains("| Facility quota limit | unlimited |"));
 }

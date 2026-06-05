@@ -4,7 +4,7 @@ This file helps coding agents get productive in `drive-warden` without rereading
 
 ## Project Summary
 
-`drive-warden` is a Rust CLI for syncing Google Drive metadata into a local SQLite snapshot, auditing duplicates/sharing/storage, inspecting file metadata, safely applying guarded sharing, recoverable trash cleanup, or parent-change organization moves, and syncing the SQLite DB to a private visible My Drive folder. The live backend supports `My Drive`; Shared Drives, permanent delete/empty-trash workflows, multi-account profiles, and keyring storage are deferred.
+`drive-warden` is a Rust CLI (**Drive Warden**) for syncing Google Drive metadata into a local SQLite intake ledger, running security briefings on duplicates/sharing/storage, backing up shared-with-me content, and safely applying guarded clearance revocations, recoverable segregation (trash), or cell transfers (moves). It syncs the SQLite DB to a private visible My Drive folder. The live backend supports `My Drive`; Shared Drives, permanent delete/empty-trash workflows, multi-account profiles, and keyring storage are deferred.
 
 The project is local-first and safety-first:
 
@@ -46,7 +46,7 @@ The binary crate is the only composition root. Adapter crates should not depend 
 
 Important core ports:
 
-- `DriveGateway`: auth, file listing, change listing, EXIF inspection, scope upgrades, folder/copy/permission writes.
+- `DriveGateway`: auth, file listing, change listing, EXIF inspection, scope upgrades, folder/copy/permission writes, file export/download, authenticated URL fetch, and remove-from-My-Drive (shared declutter).
 - `InventoryRepository`: committed snapshot state, sync run journaling, snapshot replacement, audit log, path cache inspection.
 - `ReportWriter`: Markdown output sink.
 
@@ -65,10 +65,14 @@ Important core ports:
 - `unshare --apply` must create a named remote DB release before any live mutation; if release creation fails, the permission delete must not run. It removes only actionable rows (`actionable` or `actionable_via_folder`) and records a pending audit row before each live permission delete plus final records in both `audit_log` and `revoked_share_history`. Folder-inherited grants are detected from the parent chain — Google omits the per-permission `inherited` flag for My Drive, so the synced flag is not trusted on its own — and are revoked by a single cascade delete at the operator-managed source folder, with each affected child recorded individually. Rows inherited from a folder the grantee owns are `grantee_owned_parent` (unrevokable until the item is moved out); `inherited_permission`, `not_actionable`, and `not_owned_or_manageable` rows remain visible in preview but are skipped.
 - Any permission removal — including out-of-band Drive API deletes for cases the tool cannot yet handle — must be recorded in `audit_log` and `revoked_share_history`. `sync` overwrites `files.permissions_json` with current state, so those two append-only tables are the only durable record of revoked access.
 - `trash` without `--apply` is preview-only. `trash --apply` must create a named remote DB release before any live mutation; if release creation fails, the trash call must not run. It moves only operator-owned actionable rows to Google Drive trash; shared-with-you files (`owned_by_me=false`) preview as `not_owned_or_manageable` even when writer/manage permissions exist. It never permanently deletes, requires a committed local sync snapshot, writes a pending audit row before the live trash call, and requires `--recursive` before folder rows become actionable.
+- Exact duplicate cleanup is a preview-and-review workflow. Helpers may identify exact-MD5 groups, but duplicate files must never be deleted or trashed unless the operator explicitly selects the target file IDs and confirms an apply command.
+- `backup shared-with-me` downloads or exports active shared-with-you items (`shared=true`, `owned_by_me=false`, not trashed) into a local directory and append-only `manifest.jsonl`. It is resumable: successful manifest rows are skipped on later runs. Folder rows record a placeholder directory only; Google Earth projects may remain unresolved.
+- `shared declutter` is preview-only by default. `--apply --yes` removes backed-up shared-with-you **files** from the operator's My Drive via `removeParents=root` (not owner trash). It requires a backup manifest, creates a pre-mutation remote DB release when actionable rows exist, runs a full sync afterward, and never removes folder placeholders, unresolved exports, or items missing from the manifest.
+- `report attention` is a read-only terminal briefing (table/JSON, not Markdown) combining warden-rounds health, shared-with-me backup gaps, exact-MD5 duplicate groups, and remote release retention warnings.
 - `move` without `--apply` is preview-only. `move --apply` must create a named remote DB release before any live parent change; if release creation fails, the move must not run. Destinations may be My Drive root (`--to-root`), an existing folder by ID or exact synced path, or a path created during apply with `--provision-missing`. Orchestration provisions missing destination folders first, then reparents selected items. It requires a committed local sync snapshot, writes pending/applied rows to `created_folder_history` and `moved_file_history` (including folder descendants), and runs a full sync afterward so moved folder descendants get updated paths.
 - `trash-status` and `trash-history` read append-only `trashed_file_history`; status must warn on recoverability deadlines inside the configured window.
 - `trash-restore` is read-only guidance only; do not imply Drive restore mutation exists unless it is actually implemented and audited.
-- `doctor` is the read-only operator health check and should remain safe to run before destructive or remote decisions.
+- `doctor` (warden rounds) is the read-only operator health check and should remain safe to run before destructive or remote decisions.
 - `db remote sync` pushes only when local DB exists and remote DB is missing, pulls only when local DB is missing and remote DB exists, and fails when both exist until the operator chooses explicit `db remote push --yes` or `db remote pull --yes`.
 - `db remote release --name <tag> --yes` creates named DB snapshot files and must never overwrite an existing release tag. `db remote release list` should discover release DB/manifest pairs without mutating Drive.
 - The default remote DB folder is `drive-warden-db`. The legacy `gdrive-optimize-db` name is lookup fallback only for migrations; use `db remote rename-folder --yes` to rename it in place without moving release files.
@@ -170,6 +174,7 @@ Functional and acceptance tests must use mock fixtures, not live Google.
 
 - `README.md`: operator quick start and current scope.
 - `docs/operator/getting-started.md`: live/mock workflows and troubleshooting.
+- `docs/operator/duplicate-cleanup.md`: exact-MD5 duplicate review and shared-with-me declutter workflow.
 - `docs/operator/google-cloud-setup.md`: OAuth client setup.
 - `docs/operator/runbooks/`: recovery and operational procedures.
 - `docs/architecture/overview.md`: crate boundaries.

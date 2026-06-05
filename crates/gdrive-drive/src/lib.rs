@@ -764,14 +764,54 @@ impl DriveGateway for MockDriveGateway {
     async fn download_file(&self, file_id: &str) -> CoreResult<Vec<u8>> {
         self.ensure_scope(DriveScope::DriveReadonly).await?;
         let state = self.load_mutation_state()?;
-        state
+        if let Some(contents) = state
             .remote_files
             .iter()
             .find(|file| file.metadata.id == file_id)
             .map(|file| file.contents.clone())
-            .ok_or_else(|| {
-                CoreError::Message(format!("mock remote file `{file_id}` was not found"))
-            })
+        {
+            return Ok(contents);
+        }
+        let file = self.get_file(file_id).await?;
+        Ok(format!("mock download\nid={}\nname={}\n", file.id, file.name).into_bytes())
+    }
+
+    async fn export_file(&self, file_id: &str, mime_type: &str) -> CoreResult<Vec<u8>> {
+        self.ensure_scope(DriveScope::DriveReadonly).await?;
+        let file = self.get_file(file_id).await?;
+        Ok(format!("mock export\nid={}\nname={}\nmime={mime_type}\n", file.id, file.name)
+            .into_bytes())
+    }
+
+    async fn download_url(&self, url: &str) -> CoreResult<Vec<u8>> {
+        self.ensure_scope(DriveScope::DriveReadonly).await?;
+        Ok(format!("mock authenticated URL download\nurl={url}\n").into_bytes())
+    }
+
+    async fn remove_my_drive_parent(&self, file_id: &str) -> CoreResult<RemoteFileMetadata> {
+        self.ensure_scope(DriveScope::Drive).await?;
+        let fixture = self.fixture()?;
+        let mut state = self.load_mutation_state()?;
+        let Some(mut file) = fixture
+            .file_pages
+            .values()
+            .flat_map(|page| page.files.iter())
+            .chain(fixture.change_pages.values().flat_map(|page| page.updated_files.iter()))
+            .find(|file| file.id == file_id)
+            .cloned()
+        else {
+            return Err(CoreError::Message(format!("mock file `{file_id}` was not found")));
+        };
+        let parent_move = ParentMove {
+            file_id: file_id.to_string(),
+            add_parent_id: String::new(),
+            remove_parent_ids: vec!["root".to_string()],
+        };
+        state.parent_moves.push(parent_move.clone());
+        self.store_mutation_state(&state)?;
+        file.parents.retain(|parent| parent != "root");
+        file.modified_time = Some(Utc::now());
+        Ok(RemoteFileMetadata::from(file))
     }
 
     async fn get_account_about(&self) -> CoreResult<AccountAbout> {

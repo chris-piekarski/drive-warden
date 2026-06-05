@@ -29,6 +29,7 @@
 ## Operator guides (Phase 4 deliverables)
 
 - `operator/getting-started.md`
+- `operator/duplicate-cleanup.md`
 - `operator/google-cloud-setup.md`
 - `operator/runbooks/`
 

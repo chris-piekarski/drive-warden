@@ -17,7 +17,7 @@ fn unshare_dry_run_shows_actionable_and_non_actionable_rows() {
     assert!(output.status.success(), "stderr: {}", support::stderr(&output));
 
     let stdout = support::stdout(&output);
-    assert!(stdout.contains("unshare preview:"));
+    assert!(stdout.contains("clearance revocation preview:"));
     assert!(stdout.contains("public-file"));
     assert!(stdout.contains("reason=actionable"));
     assert!(stdout.contains("inherited-file"));
@@ -26,7 +26,7 @@ fn unshare_dry_run_shows_actionable_and_non_actionable_rows() {
     let explicit_dry_run =
         support::run_mock_command(&temp_dir, &["unshare", "--shared-with", "anyone", "--dry-run"]);
     assert!(explicit_dry_run.status.success(), "stderr: {}", support::stderr(&explicit_dry_run));
-    assert!(support::stdout(&explicit_dry_run).contains("unshare preview:"));
+    assert!(support::stdout(&explicit_dry_run).contains("clearance revocation preview:"));
 }
 
 #[test]
@@ -44,8 +44,8 @@ fn unshare_apply_updates_scope_audit_and_follow_up_queries() {
     assert!(output.status.success(), "stderr: {}", support::stderr(&output));
     let stdout = support::stdout(&output);
     assert!(stdout.contains("pre-mutation release: name=before-unshare-"));
-    assert!(stdout.contains("unshare applied: planned=1 applied=1 skipped=0"));
-    assert!(stdout.contains("post-apply sync:"));
+    assert!(stdout.contains("clearance revocations applied: planned=1 applied=1 skipped=0"));
+    assert!(stdout.contains("post-apply roll call:"));
 
     let status = support::run_mock_command(&temp_dir, &["auth", "status"]);
     assert!(status.status.success(), "stderr: {}", support::stderr(&status));
@@ -104,7 +104,7 @@ fn unshare_retain_copy_backs_up_before_removing_public_share() {
     let stdout = support::stdout(&output);
     assert!(stdout.contains("pre-mutation release: name=before-unshare-"));
     assert!(stdout.contains("retained copy: roots=1 copied_files=1 created_folders=1"));
-    assert!(stdout.contains("unshare applied: planned=1 applied=1 skipped=0"));
+    assert!(stdout.contains("clearance revocations applied: planned=1 applied=1 skipped=0"));
 
     let repository =
         SqliteInventoryRepository::new(support::temp_db_path(&temp_dir)).expect("repo");

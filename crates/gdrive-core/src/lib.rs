@@ -1140,6 +1140,21 @@ pub trait DriveGateway: Send + Sync {
             "remote file download is not supported by this Drive backend for `{file_id}`"
         )))
     }
+    async fn export_file(&self, file_id: &str, mime_type: &str) -> CoreResult<Vec<u8>> {
+        Err(CoreError::Message(format!(
+            "remote file export is not supported by this Drive backend for `{file_id}` as `{mime_type}`"
+        )))
+    }
+    async fn download_url(&self, url: &str) -> CoreResult<Vec<u8>> {
+        Err(CoreError::Message(format!(
+            "authenticated URL download is not supported by this Drive backend for `{url}`"
+        )))
+    }
+    async fn remove_my_drive_parent(&self, file_id: &str) -> CoreResult<RemoteFileMetadata> {
+        Err(CoreError::Message(format!(
+            "remove from My Drive is not supported by this Drive backend for `{file_id}`"
+        )))
+    }
     async fn get_account_about(&self) -> CoreResult<AccountAbout> {
         Err(CoreError::Message(
             "account about settings are not supported by this Drive backend".into(),

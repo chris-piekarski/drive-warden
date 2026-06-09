@@ -78,6 +78,17 @@ async fn run(cli: Cli) -> Result<()> {
                 let session = login(gateway.as_ref(), DriveScope::MetadataReadonly)
                     .await
                     .map_err(anyhow::Error::msg)?;
+                // Reject a login that authenticates as the wrong identity for the
+                // selected account; bind it on first match (TOFU / declared).
+                if let Some(account) = runtime.account.as_ref() {
+                    identity::apply_identity_outcome(
+                        account,
+                        &session.account.email,
+                        &session.account.account_id,
+                        session.account.display_name.as_deref(),
+                        identity::IdentityCheckMode::Block,
+                    )?;
+                }
                 let scopes = session
                     .active_scopes
                     .iter()

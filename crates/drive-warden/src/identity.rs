@@ -9,7 +9,7 @@
 use anyhow::{bail, Context, Result};
 use gdrive_core::DriveGateway;
 
-use crate::account::IdentityState;
+use crate::account::{AccountContext, IdentityState};
 use crate::AppRuntime;
 
 /// Whether an identity mismatch blocks (writes) or only warns (reads).
@@ -85,21 +85,40 @@ pub async fn ensure_account_identity(
         },
     };
 
+    apply_identity_outcome(
+        account,
+        &profile.email,
+        &profile.account_id,
+        profile.display_name.as_deref(),
+        mode,
+    )
+}
+
+/// Apply the identity decision for an already-known live identity (e.g. the
+/// session returned by `auth login`): proceed on match, bind on first
+/// observation, or block/warn on mismatch.
+pub fn apply_identity_outcome(
+    account: &AccountContext,
+    live_email: &str,
+    live_account_id: &str,
+    live_display_name: Option<&str>,
+    mode: IdentityCheckMode,
+) -> Result<()> {
     match evaluate_identity(
         account.toml.identity.state,
         account.bound_email(),
         account.bound_account_id(),
-        &profile.email,
-        &profile.account_id,
+        live_email,
+        live_account_id,
     ) {
         IdentityOutcome::Match => Ok(()),
         IdentityOutcome::BindNow => {
             let mut updated = account.toml.clone();
             updated.identity.state = IdentityState::Bound;
-            updated.identity.email = Some(profile.email.clone());
-            updated.identity.account_id = Some(profile.account_id.clone());
+            updated.identity.email = Some(live_email.to_string());
+            updated.identity.account_id = Some(live_account_id.to_string());
             if updated.identity.display_name.is_none() {
-                updated.identity.display_name = profile.display_name.clone();
+                updated.identity.display_name = live_display_name.map(ToString::to_string);
             }
             crate::account::save_account_toml(&account.account_toml_path(), &updated)?;
             Ok(())
@@ -111,13 +130,13 @@ pub async fn ensure_account_identity(
                     "SECURITY ALERT: account `{}` is bound to {} but the active Google session is {} ({}). Refusing to proceed.",
                     account.name,
                     bound,
-                    profile.email,
-                    profile.account_id
+                    live_email,
+                    live_account_id
                 ),
                 IdentityCheckMode::Warn => {
                     eprintln!(
                         "SECURITY ALERT: account `{}` is bound to {} but the active Google session is {}.",
-                        account.name, bound, profile.email
+                        account.name, bound, live_email
                     );
                     Ok(())
                 }

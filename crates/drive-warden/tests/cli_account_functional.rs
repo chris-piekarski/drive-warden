@@ -50,6 +50,21 @@ fn account_remove_refuses_current_and_requires_yes() {
 }
 
 #[test]
+fn account_add_rejects_contradictory_adopt_flags() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+
+    // --empty contradicts --adopt-db
+    let conflict =
+        run_account_command(&tmp, &["account", "add", "x", "--empty", "--adopt-db", "/tmp/foo.db"]);
+    assert!(!conflict.status.success(), "should reject --empty with --adopt-db");
+
+    // --adopt-tokens requires --adopt-db (otherwise it is silently ignored)
+    let orphan =
+        run_account_command(&tmp, &["account", "add", "y", "--adopt-tokens", "/tmp/t.json"]);
+    assert!(!orphan.status.success(), "should reject --adopt-tokens without --adopt-db");
+}
+
+#[test]
 fn account_add_adopts_legacy_database() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Seed a legacy data/ db under the temp accounts-root parent.

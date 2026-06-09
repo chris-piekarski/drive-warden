@@ -157,6 +157,7 @@ async fn run(cli: Cli) -> Result<()> {
             ReportCommand::All(args) => {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
                 let gateway = runtime.build_gateway();
+                warn_identity(gateway.as_ref(), &runtime).await;
                 let account_about = fetch_account_about_best_effort(gateway.as_ref()).await;
                 let writer = MarkdownReportWriter;
                 let output_dir = resolve_report_dir(&runtime, args.output.as_deref());
@@ -230,6 +231,7 @@ async fn run(cli: Cli) -> Result<()> {
             ReportCommand::Storage(args) => {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
                 let gateway = runtime.build_gateway();
+                warn_identity(gateway.as_ref(), &runtime).await;
                 let account_about = fetch_account_about_best_effort(gateway.as_ref()).await;
                 let sync_state = repository.get_sync_state()?;
                 let query = InventoryQuery::default();
@@ -246,6 +248,7 @@ async fn run(cli: Cli) -> Result<()> {
             ReportCommand::Summary(args) => {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
                 let gateway = runtime.build_gateway();
+                warn_identity(gateway.as_ref(), &runtime).await;
                 let account_about = fetch_account_about_best_effort(gateway.as_ref()).await;
                 let sync_state = repository.get_sync_state()?;
                 let query = InventoryQuery::default();
@@ -272,6 +275,7 @@ async fn run(cli: Cli) -> Result<()> {
             ReportCommand::Attention(args) => {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
                 let gateway = runtime.build_gateway();
+                warn_identity(gateway.as_ref(), &runtime).await;
                 let report =
                     build_attention_report(gateway.as_ref(), &runtime, &repository, &args).await?;
                 print_attention_report(cli.format, &report)?;
@@ -794,7 +798,7 @@ struct AccountAddArgs {
     #[arg(long)]
     email: Option<String>,
     /// Create an empty account even if a legacy database could be adopted.
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with_all = ["adopt", "adopt_db"])]
     empty: bool,
     /// Adopt the legacy database without an interactive prompt.
     #[arg(long, action = ArgAction::SetTrue)]
@@ -803,10 +807,10 @@ struct AccountAddArgs {
     #[arg(long)]
     adopt_db: Option<String>,
     /// Token cache to adopt alongside `--adopt-db`.
-    #[arg(long)]
+    #[arg(long, requires = "adopt_db")]
     adopt_tokens: Option<String>,
     /// Session file to adopt alongside `--adopt-db`.
-    #[arg(long)]
+    #[arg(long, requires = "adopt_db")]
     adopt_session: Option<String>,
 }
 
@@ -1437,6 +1441,13 @@ fn account_label(runtime: &AppRuntime) -> Option<String> {
         .account
         .as_ref()
         .map(|account| format!("{} ({})", account.name, account.bound_email().unwrap_or("unbound")))
+}
+
+/// Warn (never block) if the active session does not match the selected
+/// account. For read-class commands that already talk to the account's Drive.
+async fn warn_identity(gateway: &dyn DriveGateway, runtime: &AppRuntime) {
+    let _ = identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Warn)
+        .await;
 }
 
 /// Print the active account on stderr (skipped when quiet or emitting JSON).
@@ -2437,6 +2448,7 @@ async fn handle_remote_db_command(
 ) -> Result<()> {
     match command {
         RemoteDbCommand::Status => {
+            warn_identity(gateway, runtime).await;
             let status = build_remote_db_status(gateway, runtime, false).await?;
             print_remote_db_status(format, &status)?;
             Ok(())

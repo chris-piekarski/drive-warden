@@ -47,8 +47,10 @@ pub fn evaluate_identity(
     match state {
         IdentityState::Bound => match bound_account_id {
             Some(id) if id == live_account_id => IdentityOutcome::Match,
-            Some(_) => IdentityOutcome::Mismatch,
-            None => IdentityOutcome::BindNow,
+            // A bound account always records its permissionId; a missing one
+            // means a corrupted/hand-edited binding. Fail closed (block) rather
+            // than silently re-binding to whatever identity is live.
+            _ => IdentityOutcome::Mismatch,
         },
         IdentityState::Declared => match bound_email {
             Some(email) if email.eq_ignore_ascii_case(live_email) => IdentityOutcome::BindNow,
@@ -157,6 +159,11 @@ mod tests {
         );
         assert_eq!(
             evaluate_identity(IdentityState::Bound, Some("a@x"), Some("ID1"), "a@x", "ID2"),
+            IdentityOutcome::Mismatch
+        );
+        // A bound account with a missing permissionId is fail-closed, not rebound.
+        assert_eq!(
+            evaluate_identity(IdentityState::Bound, Some("a@x"), None, "a@x", "ID1"),
             IdentityOutcome::Mismatch
         );
     }

@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::{io, io::Write};
 
+mod account;
 mod shared_backup;
 mod shared_declutter;
 
@@ -606,6 +607,9 @@ struct Cli {
     #[arg(long, global = true)]
     db: Option<String>,
 
+    #[arg(long, global = true)]
+    account: Option<String>,
+
     #[arg(long, global = true, value_enum)]
     backend: Option<BackendKind>,
 
@@ -1089,6 +1093,10 @@ struct AppRuntime {
     reports_output_dir: PathBuf,
     stale_threshold_days: i64,
     remote_db: RemoteDbConfig,
+    /// The selected account, or `None` in legacy single-db / escape-hatch mode.
+    account: Option<account::AccountContext>,
+    /// Root directory under which named account directories live.
+    accounts_root: PathBuf,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1101,6 +1109,13 @@ struct FileConfig {
     database: FileDatabaseConfig,
     #[serde(default)]
     reports: FileReportsConfig,
+    #[serde(default)]
+    accounts: FileAccountsConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FileAccountsConfig {
+    root: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1147,53 +1162,134 @@ impl AppRuntime {
             .backend
             .or_else(|| config.backend.kind.as_deref().and_then(BackendKind::from_config))
             .unwrap_or(BackendKind::Google);
-        let db_path = cli
-            .db
-            .clone()
-            .or(config.database.path)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("data/inventory.db"));
-        let runtime_dir =
-            db_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("data"));
+        // Resolve which account (if any) this invocation targets.
+        let accounts_root = account::accounts_root_from(
+            std::env::var("DRIVE_WARDEN_ACCOUNTS_ROOT").ok(),
+            config.accounts.root.as_deref(),
+        );
+        let env_account = std::env::var("DRIVE_WARDEN_ACCOUNT").ok();
+        let current = account::read_current(&accounts_root)?;
+        let accounts_exist = !account::list_account_names(&accounts_root)?.is_empty();
+        let resolution = account::resolve_account(
+            cli.db.is_some(),
+            cli.account.as_deref(),
+            env_account.as_deref(),
+            current.as_deref(),
+            accounts_exist,
+            command_needs_account(&cli.command),
+        )?;
+        let account = match resolution {
+            account::AccountResolution::Named(name) => {
+                Some(account::AccountContext::load(&accounts_root, &name)?)
+            }
+            account::AccountResolution::Legacy => None,
+        };
+
+        // In account mode, the db and runtime files live in the account dir;
+        // otherwise fall back to the legacy `--db`/config/default resolution.
+        let (db_path, runtime_dir) = match &account {
+            Some(ctx) => (ctx.db_path(), ctx.dir.clone()),
+            None => {
+                let db_path = cli
+                    .db
+                    .clone()
+                    .or_else(|| config.database.path.clone())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("data/inventory.db"));
+                let runtime_dir = db_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("data"));
+                (db_path, runtime_dir)
+            }
+        };
+
         let fixture_dir = config
             .backend
             .fixture_dir
+            .clone()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("tests/fixtures/drive_small"));
-        let reports_output_dir = config
-            .reports
-            .output_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("reports"));
-        let google_credentials_path =
-            env_var_os_any(&["DRIVE_WARDEN_CREDENTIALS", "GDRIVE_OPTIMIZE_CREDENTIALS"])
-                .map(PathBuf::from)
-                .or_else(|| config.google.credentials_path.map(PathBuf::from))
-                .unwrap_or_else(|| runtime_dir.join("credentials.json"));
-        let google_token_path = env_var_os_any(&["DRIVE_WARDEN_TOKENS", "GDRIVE_OPTIMIZE_TOKENS"])
-            .map(PathBuf::from)
-            .or_else(|| config.google.token_path.map(PathBuf::from))
-            .unwrap_or_else(|| runtime_dir.join("google-tokens.json"));
-        let google_session_path =
-            env_var_os_any(&["DRIVE_WARDEN_GOOGLE_SESSION", "GDRIVE_OPTIMIZE_GOOGLE_SESSION"])
-                .map(PathBuf::from)
-                .or_else(|| config.google.session_path.map(PathBuf::from))
-                .unwrap_or_else(|| runtime_dir.join("google-session.json"));
 
-        let (remote_folder_name, legacy_folder_names) = match config.database.remote_folder_name {
+        // Reports default into the account dir; legacy keeps config/default.
+        let reports_output_dir = match &account {
+            Some(ctx) => ctx.reports_dir(),
+            None => config
+                .reports
+                .output_dir
+                .clone()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("reports")),
+        };
+
+        // Credentials/token/session resolution differs by mode. In account
+        // mode tokens/session live in the account dir while credentials.json is
+        // shared at the accounts-root parent; legacy mode is unchanged.
+        let (google_credentials_path, google_token_path, google_session_path) = match &account {
+            Some(ctx) => {
+                let shared_credentials = accounts_root
+                    .parent()
+                    .map(|parent| parent.join("credentials.json"))
+                    .unwrap_or_else(|| PathBuf::from("data/credentials.json"));
+                let credentials =
+                    env_var_os_any(&["DRIVE_WARDEN_CREDENTIALS", "GDRIVE_OPTIMIZE_CREDENTIALS"])
+                        .map(PathBuf::from)
+                        .or_else(|| {
+                            ctx.toml.overrides.credentials_path.clone().map(PathBuf::from)
+                        })
+                        .unwrap_or(shared_credentials);
+                let token = env_var_os_any(&["DRIVE_WARDEN_TOKENS", "GDRIVE_OPTIMIZE_TOKENS"])
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| runtime_dir.join("google-tokens.json"));
+                let session =
+                    env_var_os_any(&["DRIVE_WARDEN_GOOGLE_SESSION", "GDRIVE_OPTIMIZE_GOOGLE_SESSION"])
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| runtime_dir.join("google-session.json"));
+                (credentials, token, session)
+            }
+            None => {
+                let credentials =
+                    env_var_os_any(&["DRIVE_WARDEN_CREDENTIALS", "GDRIVE_OPTIMIZE_CREDENTIALS"])
+                        .map(PathBuf::from)
+                        .or_else(|| config.google.credentials_path.clone().map(PathBuf::from))
+                        .unwrap_or_else(|| runtime_dir.join("credentials.json"));
+                let token = env_var_os_any(&["DRIVE_WARDEN_TOKENS", "GDRIVE_OPTIMIZE_TOKENS"])
+                    .map(PathBuf::from)
+                    .or_else(|| config.google.token_path.clone().map(PathBuf::from))
+                    .unwrap_or_else(|| runtime_dir.join("google-tokens.json"));
+                let session =
+                    env_var_os_any(&["DRIVE_WARDEN_GOOGLE_SESSION", "GDRIVE_OPTIMIZE_GOOGLE_SESSION"])
+                        .map(PathBuf::from)
+                        .or_else(|| config.google.session_path.clone().map(PathBuf::from))
+                        .unwrap_or_else(|| runtime_dir.join("google-session.json"));
+                (credentials, token, session)
+            }
+        };
+
+        // Remote DB config honors per-account folder/db-name overrides.
+        let (remote_folder_name, legacy_folder_names) = match account
+            .as_ref()
+            .and_then(|ctx| ctx.toml.remote.folder_name.clone())
+            .or_else(|| config.database.remote_folder_name.clone())
+        {
             Some(name) => (name, Vec::new()),
             None => {
                 (DEFAULT_REMOTE_DB_FOLDER_NAME.into(), vec![LEGACY_REMOTE_DB_FOLDER_NAME.into()])
             }
         };
         let remote_db = RemoteDbConfig {
-            folder_id: config.database.remote_folder_id,
+            folder_id: config.database.remote_folder_id.clone(),
             folder_name: remote_folder_name,
             legacy_folder_names,
-            db_name: config.database.remote_db_name.unwrap_or_else(|| "inventory.db".into()),
+            db_name: account
+                .as_ref()
+                .and_then(|ctx| ctx.toml.remote.db_name.clone())
+                .or_else(|| config.database.remote_db_name.clone())
+                .unwrap_or_else(|| "inventory.db".into()),
             manifest_name: config
                 .database
                 .remote_manifest_name
+                .clone()
                 .unwrap_or_else(|| "inventory.db.manifest.json".into()),
         };
 
@@ -1208,6 +1304,8 @@ impl AppRuntime {
             reports_output_dir,
             stale_threshold_days: config.reports.stale_threshold_days.unwrap_or(730),
             remote_db,
+            account,
+            accounts_root,
         })
     }
 
@@ -1227,6 +1325,15 @@ impl AppRuntime {
 
 fn env_var_os_any(names: &[&str]) -> Option<std::ffi::OsString> {
     names.iter().find_map(std::env::var_os)
+}
+
+/// Whether a command requires a resolved account in account mode. Commands that
+/// manage accounts themselves, or need no Drive state, do not. When this is
+/// false and no account is selected, resolution falls back to legacy paths
+/// instead of erroring.
+fn command_needs_account(command: &Command) -> bool {
+    // Phase 3 extends this to also exclude `Command::Account(_)`.
+    !matches!(command, Command::Completions(_))
 }
 
 fn load_file_config(path: &Path) -> Result<FileConfig> {

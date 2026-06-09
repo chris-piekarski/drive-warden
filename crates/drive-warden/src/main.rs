@@ -272,7 +272,7 @@ async fn run(cli: Cli) -> Result<()> {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
                 let gateway = runtime.build_gateway();
                 let options = SharedBackupOptions {
-                    out_dir: args.out,
+                    out_dir: resolve_backup_dir(&runtime, args.out),
                     manifest_path: args.manifest,
                     reuse_manifest: args.reuse_manifest,
                     limit: args.limit,
@@ -886,8 +886,10 @@ enum BackupCommand {
 
 #[derive(Debug, Args)]
 struct SharedBackupArgs {
-    #[arg(long, default_value = "backups/shared-with-me")]
-    out: PathBuf,
+    /// Output directory; defaults to the account's `backups/shared-with-me`
+    /// (account mode) or `backups/shared-with-me` (legacy).
+    #[arg(long)]
+    out: Option<PathBuf>,
     #[arg(long)]
     manifest: Option<PathBuf>,
     #[arg(long = "reuse-manifest")]
@@ -1315,17 +1317,17 @@ impl AppRuntime {
                 let credentials =
                     env_var_os_any(&["DRIVE_WARDEN_CREDENTIALS", "GDRIVE_OPTIMIZE_CREDENTIALS"])
                         .map(PathBuf::from)
-                        .or_else(|| {
-                            ctx.toml.overrides.credentials_path.clone().map(PathBuf::from)
-                        })
+                        .or_else(|| ctx.toml.overrides.credentials_path.clone().map(PathBuf::from))
                         .unwrap_or(shared_credentials);
                 let token = env_var_os_any(&["DRIVE_WARDEN_TOKENS", "GDRIVE_OPTIMIZE_TOKENS"])
                     .map(PathBuf::from)
                     .unwrap_or_else(|| runtime_dir.join("google-tokens.json"));
-                let session =
-                    env_var_os_any(&["DRIVE_WARDEN_GOOGLE_SESSION", "GDRIVE_OPTIMIZE_GOOGLE_SESSION"])
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| runtime_dir.join("google-session.json"));
+                let session = env_var_os_any(&[
+                    "DRIVE_WARDEN_GOOGLE_SESSION",
+                    "GDRIVE_OPTIMIZE_GOOGLE_SESSION",
+                ])
+                .map(PathBuf::from)
+                .unwrap_or_else(|| runtime_dir.join("google-session.json"));
                 (credentials, token, session)
             }
             None => {
@@ -1338,11 +1340,13 @@ impl AppRuntime {
                     .map(PathBuf::from)
                     .or_else(|| config.google.token_path.clone().map(PathBuf::from))
                     .unwrap_or_else(|| runtime_dir.join("google-tokens.json"));
-                let session =
-                    env_var_os_any(&["DRIVE_WARDEN_GOOGLE_SESSION", "GDRIVE_OPTIMIZE_GOOGLE_SESSION"])
-                        .map(PathBuf::from)
-                        .or_else(|| config.google.session_path.clone().map(PathBuf::from))
-                        .unwrap_or_else(|| runtime_dir.join("google-session.json"));
+                let session = env_var_os_any(&[
+                    "DRIVE_WARDEN_GOOGLE_SESSION",
+                    "GDRIVE_OPTIMIZE_GOOGLE_SESSION",
+                ])
+                .map(PathBuf::from)
+                .or_else(|| config.google.session_path.clone().map(PathBuf::from))
+                .unwrap_or_else(|| runtime_dir.join("google-session.json"));
                 (credentials, token, session)
             }
         };
@@ -1594,7 +1598,8 @@ fn account_remove(runtime: &AppRuntime, args: AccountRemoveArgs) -> Result<()> {
         );
     }
     let dir = root.join(&args.name);
-    std::fs::remove_dir_all(&dir).with_context(|| format!("failed to remove `{}`", dir.display()))?;
+    std::fs::remove_dir_all(&dir)
+        .with_context(|| format!("failed to remove `{}`", dir.display()))?;
     println!("Removed account `{}` (local only; remote backup untouched).", args.name);
     Ok(())
 }
@@ -1707,6 +1712,15 @@ async fn fetch_account_about_best_effort(gateway: &dyn DriveGateway) -> Option<A
 fn resolve_report_dir(runtime: &AppRuntime, output: Option<&str>) -> PathBuf {
     output.map(PathBuf::from).unwrap_or_else(|| {
         runtime.reports_output_dir.join(Utc::now().format("%Y-%m-%d").to_string())
+    })
+}
+
+/// Resolve the shared-with-me backup output dir: explicit `--out`, else the
+/// account's `backups/shared-with-me` (account mode), else the legacy default.
+fn resolve_backup_dir(runtime: &AppRuntime, out: Option<PathBuf>) -> PathBuf {
+    out.unwrap_or_else(|| match runtime.account.as_ref() {
+        Some(account) => account.dir.join("backups/shared-with-me"),
+        None => PathBuf::from("backups/shared-with-me"),
     })
 }
 
@@ -2503,7 +2517,8 @@ async fn handle_remote_db_command(
                                 "`db remote release prune --apply` requires explicit `--yes`; run without `--apply` first to preview"
                             );
                         }
-                        let summary = apply_remote_db_release_prune(gateway, runtime, &plan).await?;
+                        let summary =
+                            apply_remote_db_release_prune(gateway, runtime, &plan).await?;
                         print_remote_db_release_prune_apply(format, &plan, &summary)?;
                         return Ok(());
                     }

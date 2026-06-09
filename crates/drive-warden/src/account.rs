@@ -135,9 +135,7 @@ pub fn read_current(accounts_root: &Path) -> Result<Option<String>> {
             Ok(if name.is_empty() { None } else { Some(name) })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => {
-            Err(error).with_context(|| format!("failed to read `{}`", path.display()))
-        }
+        Err(error) => Err(error).with_context(|| format!("failed to read `{}`", path.display())),
     }
 }
 
@@ -158,8 +156,9 @@ pub fn list_account_names(accounts_root: &Path) -> Result<Vec<String>> {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(names),
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to read accounts root `{}`", accounts_root.display()))
+            return Err(error).with_context(|| {
+                format!("failed to read accounts root `{}`", accounts_root.display())
+            })
         }
     };
     for entry in entries {
@@ -296,8 +295,7 @@ pub struct AdoptionSources {
 pub fn legacy_adoption_sources(accounts_root: &Path) -> AdoptionSources {
     let data_dir =
         accounts_root.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("data"));
-    let workspace =
-        data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let workspace = data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
     AdoptionSources {
         db: data_dir.join("inventory.db"),
         tokens: Some(data_dir.join("google-tokens.json")),

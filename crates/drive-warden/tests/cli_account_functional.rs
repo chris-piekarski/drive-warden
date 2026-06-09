@@ -6,7 +6,10 @@ use support::*;
 fn account_add_empty_list_use_current() {
     let tmp = tempfile::tempdir().expect("tempdir");
 
-    let add = run_account_command(&tmp, &["account", "add", "personal", "--empty", "--email", "me@x.com"]);
+    let add = run_account_command(
+        &tmp,
+        &["account", "add", "personal", "--empty", "--email", "me@x.com"],
+    );
     assert!(add.status.success(), "add failed: {}", stderr(&add));
     assert!(stdout(&add).contains("Created account"), "{}", stdout(&add));
 
@@ -54,7 +57,10 @@ fn account_add_adopts_legacy_database() {
     // accounts root is <tmp>/accounts, so its parent is <tmp>; legacy db lives at <tmp>/inventory.db
     std::fs::write(data_dir.join("inventory.db"), b"legacy-db").expect("seed db");
 
-    let add = run_account_command(&tmp, &["account", "add", "personal", "--adopt", "--email", "me@x.com"]);
+    let add = run_account_command(
+        &tmp,
+        &["account", "add", "personal", "--adopt", "--email", "me@x.com"],
+    );
     assert!(add.status.success(), "adopt failed: {}", stderr(&add));
     assert!(stdout(&add).contains("Adopted"), "{}", stdout(&add));
 

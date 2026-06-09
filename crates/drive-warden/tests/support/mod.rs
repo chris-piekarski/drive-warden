@@ -80,10 +80,20 @@ pub fn stderr(output: &Output) -> String {
 /// `--db` (so account resolution is active rather than the legacy escape hatch).
 #[allow(dead_code)]
 pub fn run_account_command(temp_dir: &TempDir, args: &[&str]) -> Output {
+    run_account_command_with_fixture(temp_dir, "tests/fixtures/drive_small", args)
+}
+
+/// Account-mode invocation against a specific mock fixture directory.
+#[allow(dead_code)]
+pub fn run_account_command_with_fixture(
+    temp_dir: &TempDir,
+    fixture_dir: &str,
+    args: &[&str],
+) -> Output {
     let accounts_root = temp_dir.path().join("accounts");
     let config_path = temp_dir.path().join("account-mock.toml");
     let contents = format!(
-        "[backend]\nkind = \"mock\"\nfixture_dir = \"tests/fixtures/drive_small\"\n\n[accounts]\nroot = \"{}\"\n",
+        "[backend]\nkind = \"mock\"\nfixture_dir = \"{fixture_dir}\"\n\n[accounts]\nroot = \"{}\"\n",
         accounts_root.display()
     );
     fs::write(&config_path, contents).expect("write account config");
@@ -97,7 +107,18 @@ pub fn run_account_command(temp_dir: &TempDir, args: &[&str]) -> Output {
 /// Account-mode invocation pinned to a specific account via `--account`.
 #[allow(dead_code)]
 pub fn run_account_in(temp_dir: &TempDir, account: &str, args: &[&str]) -> Output {
+    run_account_in_with_fixture(temp_dir, "tests/fixtures/drive_small", account, args)
+}
+
+/// Account-mode invocation pinned to an account against a specific fixture.
+#[allow(dead_code)]
+pub fn run_account_in_with_fixture(
+    temp_dir: &TempDir,
+    fixture_dir: &str,
+    account: &str,
+    args: &[&str],
+) -> Output {
     let mut full = vec!["--account", account];
     full.extend_from_slice(args);
-    run_account_command(temp_dir, &full)
+    run_account_command_with_fixture(temp_dir, fixture_dir, &full)
 }

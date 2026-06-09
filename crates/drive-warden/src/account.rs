@@ -518,4 +518,61 @@ mod tests {
             AccountResolution::Legacy
         );
     }
+
+    #[test]
+    fn account_context_load_and_accessors() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(AccountContext::load(root, "missing").is_err());
+
+        let mut toml = AccountToml::new(Some("me@x.com".into()));
+        toml.identity.state = IdentityState::Bound;
+        toml.identity.account_id = Some("ID1".into());
+        toml.overrides.reports_dir = Some("/custom/reports".into());
+        save_account_toml(&account_toml_path(&root.join("work")), &toml).unwrap();
+
+        let ctx = AccountContext::load(root, "work").unwrap();
+        assert_eq!(ctx.db_path(), root.join("work/inventory.db"));
+        assert_eq!(ctx.reports_dir(), PathBuf::from("/custom/reports"));
+        assert_eq!(ctx.bound_email(), Some("me@x.com"));
+        assert_eq!(ctx.bound_account_id(), Some("ID1"));
+        assert!(account_exists(root, "work"));
+        assert!(!account_exists(root, "nope"));
+    }
+
+    #[test]
+    fn load_account_toml_rejects_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("account.toml");
+        std::fs::write(&path, "not = valid [[[").unwrap();
+        assert!(load_account_toml(&path).is_err());
+    }
+
+    #[test]
+    fn adopt_rejects_existing_and_rewrites_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("accounts");
+        let src = dir.path().join("external");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("work.db"), b"db").unwrap();
+        std::fs::write(src.join("work.db-wal"), b"wal").unwrap();
+        let sources = AdoptionSources {
+            db: src.join("work.db"),
+            tokens: None,
+            session: None,
+            reports_dir: None,
+        };
+        adopt_into_account(&root, "work", &sources, Some("w@x.com".into())).unwrap();
+        assert!(root.join("work/inventory.db").exists());
+        // sidecar is renamed to the canonical base name
+        assert!(root.join("work/inventory.db-wal").exists());
+        // adopting again into the same name is refused
+        assert!(adopt_into_account(&root, "work", &sources, None).is_err());
+    }
+
+    #[test]
+    fn legacy_db_present_detects_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(legacy_db_present(&dir.path().join("accounts")).is_none());
+    }
 }

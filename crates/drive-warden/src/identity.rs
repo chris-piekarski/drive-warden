@@ -187,4 +187,43 @@ mod tests {
             IdentityOutcome::BindNow
         );
     }
+
+    use crate::account::{load_account_toml, AccountToml};
+
+    fn ctx(dir: &std::path::Path, toml: AccountToml) -> AccountContext {
+        AccountContext { name: "personal".into(), dir: dir.to_path_buf(), toml }
+    }
+
+    #[test]
+    fn apply_outcome_binds_unbound_account() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let account = ctx(dir.path(), AccountToml::new(None));
+        apply_identity_outcome(&account, "u@x", "ID1", Some("U"), IdentityCheckMode::Block)
+            .expect("bind");
+        let saved = load_account_toml(&account.account_toml_path()).expect("reload");
+        assert_eq!(saved.identity.state, IdentityState::Bound);
+        assert_eq!(saved.identity.account_id.as_deref(), Some("ID1"));
+        assert_eq!(saved.identity.display_name.as_deref(), Some("U"));
+    }
+
+    #[test]
+    fn apply_outcome_blocks_or_warns_on_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut toml = AccountToml::new(Some("a@x".into()));
+        toml.identity.state = IdentityState::Bound;
+        toml.identity.account_id = Some("ID1".into());
+        let account = ctx(dir.path(), toml);
+
+        // Block mode refuses a mismatched live identity.
+        assert!(apply_identity_outcome(&account, "a@x", "OTHER", None, IdentityCheckMode::Block)
+            .is_err());
+        // Warn mode proceeds.
+        assert!(
+            apply_identity_outcome(&account, "a@x", "OTHER", None, IdentityCheckMode::Warn).is_ok()
+        );
+        // Matching identity is a no-op success.
+        assert!(
+            apply_identity_outcome(&account, "a@x", "ID1", None, IdentityCheckMode::Block).is_ok()
+        );
+    }
 }

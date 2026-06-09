@@ -1,0 +1,43 @@
+{
+  "account": {
+    "account_id": "mock-account-1",
+    "email": "mock@example.com",
+    "display_name": "Mock Operator"
+  },
+  "start_page_token": "start-token-1",
+  "file_pages": {
+    "__start__": {
+      "next_page_token": null,
+      "files": [
+        {
+          "id": "shared-doc",
+          "name": "SharedDoc",
+          "mime_type": "application/vnd.google-apps.document",
+          "parents": ["root"],
+          "trashed": false,
+          "owned_by_me": false,
+          "shared": true,
+          "operator_can_share_manage": false,
+          "modified_time": "2024-02-01T00:00:00Z",
+          "permissions": [
+            {
+              "id": "perm-owner",
+              "permission_type": "user",
+              "role": "owner",
+              "email_address": "owner@example.com",
+              "actionable": false
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "change_pages": {
+    "start-token-1": {
+      "next_page_token": null,
+      "new_start_page_token": "start-token-2",
+      "removed_file_ids": [],
+      "updated_files": []
+    }
+  }
+}

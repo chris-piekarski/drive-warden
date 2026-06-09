@@ -563,4 +563,143 @@ mod tests {
         assert_eq!(unresolved_records.len(), 1);
         assert_eq!(unresolved_records[0].id, "blocked");
     }
+
+    use gdrive_core::{FileRecord, PathEntry, PathState, PermissionRecord};
+
+    fn item(id: &str, name: &str, mime: &str, primary_path: &str) -> InventoryItem {
+        InventoryItem {
+            file: FileRecord {
+                id: id.into(),
+                name: name.into(),
+                mime_type: mime.into(),
+                shared: true,
+                ..FileRecord::default()
+            },
+            path: PathEntry {
+                file_id: id.into(),
+                primary_path: primary_path.into(),
+                all_paths: vec![primary_path.into()],
+                depth: primary_path.matches('/').count(),
+                path_state: PathState::Resolved,
+            },
+        }
+    }
+
+    #[test]
+    fn export_attempts_cover_google_and_binary_types() {
+        let cases = [
+            (GOOGLE_DOC_MIME, "docx"),
+            (GOOGLE_SHEET_MIME, "xlsx"),
+            (GOOGLE_SLIDES_MIME, "pptx"),
+            (GOOGLE_DRAWING_MIME, "pdf"),
+            (GOOGLE_SCRIPT_MIME, "script-json"),
+            (GOOGLE_MAP_MIME, "my-maps-kml"),
+            (GOOGLE_EARTH_MIME, "earth-kml"),
+        ];
+        for (mime, first_label) in cases {
+            let attempts = export_attempts(&item("g", "G", mime, "/G")).expect("attempts");
+            assert_eq!(attempts[0].label, first_label, "mime {mime}");
+        }
+        // Direct exports carry a recovery method and url; drive exports do not.
+        let doc = export_attempts(&item("d", "D", GOOGLE_DOC_MIME, "/D")).unwrap();
+        assert!(doc.iter().any(|a| a.direct_url.is_some() && a.recovery_method.is_some()));
+        assert!(doc.iter().any(|a| a.direct_url.is_none()));
+        // Binary files have no export attempts.
+        assert!(export_attempts(&item("b", "B", "image/jpeg", "/B")).is_none());
+    }
+
+    #[test]
+    fn sanitize_component_handles_edge_cases() {
+        assert_eq!(sanitize_component("normal"), "normal");
+        assert_eq!(sanitize_component("  spaced  "), "spaced");
+        assert_eq!(sanitize_component(""), "_");
+        assert_eq!(sanitize_component("."), "_");
+        assert_eq!(sanitize_component(".."), "_");
+        assert_eq!(sanitize_component(&"x".repeat(200)).chars().count(), 180);
+    }
+
+    #[test]
+    fn output_path_builds_nested_paths_and_extensions() {
+        let out = Path::new("/out");
+        let nested = output_path(out, &item("i", "f.txt", "text/plain", "/A/B/f.txt"), None);
+        assert_eq!(nested, Path::new("/out/A/B/f.txt"));
+        // Empty path falls back to the file name.
+        let flat = output_path(out, &item("i", "loose.txt", "text/plain", ""), None);
+        assert_eq!(flat, Path::new("/out/loose.txt"));
+        // Extension is applied (leading dot trimmed).
+        let with_ext = output_path(out, &item("i", "doc", GOOGLE_DOC_MIME, "/doc"), Some(".docx"));
+        assert_eq!(with_ext, Path::new("/out/doc.docx"));
+    }
+
+    #[test]
+    fn owner_label_prefers_email_then_name_then_id_then_unknown() {
+        let mut with_email = item("i", "f", "text/plain", "/f");
+        with_email.file.permissions = vec![PermissionRecord {
+            role: "owner".into(),
+            email_address: Some("owner@example.com".into()),
+            ..PermissionRecord::default()
+        }];
+        assert_eq!(owner_label(&with_email), "owner@example.com");
+
+        let mut with_name = item("i", "f", "text/plain", "/f");
+        with_name.file.permissions = vec![PermissionRecord {
+            role: "owner".into(),
+            display_name: Some("Owner Name".into()),
+            ..PermissionRecord::default()
+        }];
+        assert_eq!(owner_label(&with_name), "Owner Name");
+
+        // No owner permission at all.
+        assert_eq!(owner_label(&item("i", "f", "text/plain", "/f")), "(unknown)");
+    }
+
+    #[test]
+    fn is_success_status_recognizes_terminal_states() {
+        for status in ["downloaded", "exported", "folder", "copied", "recovered_export"] {
+            assert!(is_success_status(status), "{status}");
+        }
+        for status in ["pending", "error", "not_attempted", ""] {
+            assert!(!is_success_status(status), "{status}");
+        }
+    }
+
+    #[test]
+    fn base_record_maps_core_fields() {
+        let record = base_record(&item("file-1", "Name.txt", "text/plain", "/Dir/Name.txt"));
+        assert_eq!(record.id, "file-1");
+        assert_eq!(record.name, "Name.txt");
+        assert_eq!(record.primary_path, "/Dir/Name.txt");
+        assert_eq!(record.status, "pending");
+        assert_eq!(record.owner, "(unknown)");
+    }
+
+    #[test]
+    fn build_summary_counts_completed_and_unresolved() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let manifest = temp.path().join("manifest.jsonl");
+        let local = temp.path().join("a.txt");
+        fs::write(&local, b"data").expect("write local");
+
+        let item_a = item("a", "a.txt", "text/plain", "/a.txt");
+        let item_b = item("b", "b.txt", "text/plain", "/b.txt");
+
+        let record_a = SharedBackupRecord {
+            local_path: Some(local.display().to_string()),
+            local_size: Some(4),
+            status: "downloaded".into(),
+            ..base_record(&item_a)
+        };
+        append_manifest_record(&manifest, &record_a).expect("append");
+        let mut completed = BTreeMap::new();
+        completed.insert("a".to_string(), record_a);
+
+        let summary =
+            build_summary(temp.path(), &manifest, &[item_a, item_b], &completed).expect("summary");
+        assert_eq!(summary.total_shared_with_me, 2);
+        assert_eq!(summary.completed, 1);
+        assert_eq!(summary.unresolved, 1);
+        assert_eq!(summary.counts.get("downloaded").copied(), Some(1));
+        assert_eq!(summary.local_file_bytes, 4);
+        assert_eq!(summary.unresolved_records[0].id, "b");
+    }
 }

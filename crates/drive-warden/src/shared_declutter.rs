@@ -156,3 +156,56 @@ fn classify_item(
         reason: reason.into(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gdrive_core::{FileRecord, InventoryItem, PathEntry, PathState};
+
+    fn item(id: &str, mime: &str) -> InventoryItem {
+        InventoryItem {
+            file: FileRecord {
+                id: id.into(),
+                name: format!("{id}.x"),
+                mime_type: mime.into(),
+                shared: true,
+                ..FileRecord::default()
+            },
+            path: PathEntry {
+                file_id: id.into(),
+                primary_path: format!("/{id}"),
+                all_paths: vec![format!("/{id}")],
+                depth: 1,
+                path_state: PathState::Resolved,
+            },
+        }
+    }
+
+    #[test]
+    fn classify_item_covers_all_branches() {
+        let mut backed = BTreeSet::new();
+        backed.insert("doc".to_string());
+        backed.insert("folder".to_string());
+        backed.insert("earth".to_string());
+
+        // Not present in the backup manifest -> never actionable.
+        let missing = classify_item(&item("missing", "text/plain"), &backed);
+        assert_eq!(missing.classification, "not_in_manifest");
+        assert!(!missing.actionable);
+
+        // Backed-up regular file -> actionable.
+        let backed_up = classify_item(&item("doc", "text/plain"), &backed);
+        assert_eq!(backed_up.classification, "backed_up");
+        assert!(backed_up.actionable);
+
+        // Folder placeholders are never auto-removed.
+        let folder = classify_item(&item("folder", GOOGLE_DRIVE_FOLDER_MIME), &backed);
+        assert_eq!(folder.classification, "folder_placeholder");
+        assert!(!folder.actionable);
+
+        // Google Earth requires manual export.
+        let earth = classify_item(&item("earth", "application/vnd.google-apps.earth"), &backed);
+        assert_eq!(earth.classification, "unresolved");
+        assert!(!earth.actionable);
+    }
+}

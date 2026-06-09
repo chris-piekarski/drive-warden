@@ -51,6 +51,40 @@ make gdrive-sync
 
 `move` is preview-only by default, transfers inmates between cells by changing their Drive parent, and supports `--to-root`, existing destinations by `--to-folder-id` or exact synced `--to-path`, and `--provision-missing` to create destination cells during apply. Use `move-history`, `trash-status`, `trash-history`, and `trash-restore` to review segregation deadlines and manual restore guidance from the append-only segregation history. Use `doctor` (warden rounds) for a combined facility health check. Use `db remote release --name <tag> --yes` to create a named, non-overwriting ledger snapshot beside the rolling remote DB copy, and `db remote release list` to discover releases.
 
+## Multiple accounts (personal + work)
+
+drive-warden can supervise more than one Google Drive as first-class, isolated
+accounts. Each account is a directory under `data/accounts/<name>/` with its own
+database, tokens, session, reports, and remote sync. `credentials.json` (the
+OAuth client) is shared at `data/`.
+
+```bash
+# Adopt your existing data/ database into a named account (moves files; prompts first)
+./target/debug/drive-warden account add personal --email me@gmail.com
+# Add a second account
+./target/debug/drive-warden account add work --email me@company.com --empty
+./target/debug/drive-warden --account work auth login
+
+# Select per command, or set a persisted default
+./target/debug/drive-warden --account work sync
+./target/debug/drive-warden account use personal   # current account for bare commands
+./target/debug/drive-warden sync                    # runs against personal
+
+./target/debug/drive-warden account list
+./target/debug/drive-warden account show work
+```
+
+Selection precedence: `--account` flag → `DRIVE_WARDEN_ACCOUNT` env (handy for
+per-terminal separation) → the saved current account. `--db` is the legacy
+single-database escape hatch and is mutually exclusive with `--account`.
+
+**Identity guard.** Each account binds to the Google identity it first
+authenticates as (or the `--email` you declare). Before any live Drive write —
+`trash`/`unshare`/`move`/`shared declutter --apply` and every `db remote`
+write — drive-warden verifies the active Google session matches the selected
+account. A mismatch aborts with a `SECURITY ALERT`; reads warn instead. This is
+the defense against running a destructive command against the wrong drive.
+
 ## Quick start (mock backend)
 
 ```bash

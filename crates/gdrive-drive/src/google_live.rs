@@ -608,6 +608,20 @@ impl DriveGateway for GoogleDriveGateway {
         })?;
         account_about_from_about(about)
     }
+
+    async fn get_account_profile(&self) -> CoreResult<AccountProfile> {
+        let session = self.ensure_scope_internal(DriveScope::MetadataReadonly).await?;
+        let hub = self.build_hub().await?;
+        let (_, about) = google_request!("fetching authenticated Google profile", {
+            hub.about()
+                .get()
+                .add_scopes(oauth_scope_urls(highest_active_scope(&session.active_scopes)))
+                .param("fields", ABOUT_FIELDS)
+                .doit()
+                .await
+        })?;
+        account_from_about(about)
+    }
 }
 
 pub(super) fn escape_drive_query(value: &str) -> String {

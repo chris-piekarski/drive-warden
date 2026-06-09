@@ -1,6 +1,10 @@
 APP := drive-warden
 CLI := cargo run -p $(APP) --
 
+# Optionally target a named account: `make sync ACCOUNT=work`
+ACCOUNT ?=
+ACCOUNT_FLAG := $(if $(ACCOUNT),--account $(ACCOUNT),)
+
 BLUE := \033[38;2;100;200;255m
 AMBER := \033[38;2;255;180;100m
 GREEN := \033[38;2;120;255;120m
@@ -102,13 +106,13 @@ run:
 	$(CLI) --help
 
 sync:
-	$(CLI) sync
+	$(CLI) $(ACCOUNT_FLAG) sync
 
 gdrive-sync:
-	$(CLI) db remote sync
+	$(CLI) $(ACCOUNT_FLAG) db remote sync
 
 report:
-	$(CLI) report all
+	$(CLI) $(ACCOUNT_FLAG) report all
 
 fixtures-validate:
 	cargo test -p drive-warden --test fixtures_validate -- --nocapture

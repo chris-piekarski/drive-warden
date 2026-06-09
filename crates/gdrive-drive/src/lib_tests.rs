@@ -634,6 +634,19 @@ fn live_retry_helpers_classify_transient_google_errors() {
 }
 
 #[test]
+fn mock_gateway_get_account_profile_returns_logged_in_identity() {
+    let temp_dir = TempDir::new().expect("tempdir");
+    let fixture_dir = write_fixture(&temp_dir, sample_fixture());
+    let gateway = MockDriveGateway::new(&fixture_dir, temp_dir.path().join("mock-auth.json"));
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+    runtime.block_on(gateway.login(DriveScope::MetadataReadonly)).expect("login");
+    let profile = runtime.block_on(gateway.get_account_profile()).expect("profile");
+    assert_eq!(profile.email, "mock@example.com");
+    assert_eq!(profile.account_id, "account-1");
+}
+
+#[test]
 fn mock_gateway_covers_scope_upgrade_mutation_and_file_helpers() {
     let temp_dir = TempDir::new().expect("tempdir");
     let fixture_dir = write_fixture(&temp_dir, sample_fixture());

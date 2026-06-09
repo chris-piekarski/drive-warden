@@ -831,6 +831,13 @@ impl DriveGateway for MockDriveGateway {
             )
         }))
     }
+
+    async fn get_account_profile(&self) -> CoreResult<AccountProfile> {
+        let fixture = self.fixture()?;
+        let session = self.require_active_session()?;
+        self.validate_session(&fixture)?;
+        Ok(session.account)
+    }
 }
 
 fn read_session_file(path: &Path) -> CoreResult<Option<AuthSession>> {

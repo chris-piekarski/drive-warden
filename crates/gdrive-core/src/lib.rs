@@ -1160,6 +1160,15 @@ pub trait DriveGateway: Send + Sync {
             "account about settings are not supported by this Drive backend".into(),
         ))
     }
+    /// Fetch the live identity (email + permissionId) of the authenticated
+    /// account. Used by the multi-account identity guard to verify the active
+    /// Google session matches the selected account. Backends without identity
+    /// introspection return an error, which the guard treats as fail-closed.
+    async fn get_account_profile(&self) -> CoreResult<AccountProfile> {
+        Err(CoreError::Message(
+            "account profile lookup is not supported by this Drive backend".into(),
+        ))
+    }
 }
 
 pub trait InventoryRepository: Send + Sync {

@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::{io, io::Write};
 
+mod account;
+mod identity;
 mod shared_backup;
 mod shared_declutter;
 
@@ -63,6 +65,7 @@ fn init_tracing(verbose: u8, quiet: bool) {
 
 async fn run(cli: Cli) -> Result<()> {
     let runtime = AppRuntime::from_cli(&cli)?;
+    print_account_header(&cli, &runtime);
 
     match cli.command {
         Command::Completions(args) => {
@@ -75,6 +78,17 @@ async fn run(cli: Cli) -> Result<()> {
                 let session = login(gateway.as_ref(), DriveScope::MetadataReadonly)
                     .await
                     .map_err(anyhow::Error::msg)?;
+                // Reject a login that authenticates as the wrong identity for the
+                // selected account; bind it on first match (TOFU / declared).
+                if let Some(account) = runtime.account.as_ref() {
+                    identity::apply_identity_outcome(
+                        account,
+                        &session.account.email,
+                        &session.account.account_id,
+                        session.account.display_name.as_deref(),
+                        identity::IdentityCheckMode::Block,
+                    )?;
+                }
                 let scopes = session
                     .active_scopes
                     .iter()
@@ -118,6 +132,12 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Sync(args) => {
             let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
             let gateway = runtime.build_gateway();
+            identity::ensure_account_identity(
+                gateway.as_ref(),
+                &runtime,
+                identity::IdentityCheckMode::Warn,
+            )
+            .await?;
             let summary = sync_inventory(gateway.as_ref(), &repository, args.full)
                 .await
                 .map_err(|error| anyhow::Error::msg(decorate_sync_error(&error.to_string())))?;
@@ -137,6 +157,7 @@ async fn run(cli: Cli) -> Result<()> {
             ReportCommand::All(args) => {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
                 let gateway = runtime.build_gateway();
+                warn_identity(gateway.as_ref(), &runtime).await;
                 let account_about = fetch_account_about_best_effort(gateway.as_ref()).await;
                 let writer = MarkdownReportWriter;
                 let output_dir = resolve_report_dir(&runtime, args.output.as_deref());
@@ -210,6 +231,7 @@ async fn run(cli: Cli) -> Result<()> {
             ReportCommand::Storage(args) => {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
                 let gateway = runtime.build_gateway();
+                warn_identity(gateway.as_ref(), &runtime).await;
                 let account_about = fetch_account_about_best_effort(gateway.as_ref()).await;
                 let sync_state = repository.get_sync_state()?;
                 let query = InventoryQuery::default();
@@ -226,6 +248,7 @@ async fn run(cli: Cli) -> Result<()> {
             ReportCommand::Summary(args) => {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
                 let gateway = runtime.build_gateway();
+                warn_identity(gateway.as_ref(), &runtime).await;
                 let account_about = fetch_account_about_best_effort(gateway.as_ref()).await;
                 let sync_state = repository.get_sync_state()?;
                 let query = InventoryQuery::default();
@@ -252,6 +275,7 @@ async fn run(cli: Cli) -> Result<()> {
             ReportCommand::Attention(args) => {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
                 let gateway = runtime.build_gateway();
+                warn_identity(gateway.as_ref(), &runtime).await;
                 let report =
                     build_attention_report(gateway.as_ref(), &runtime, &repository, &args).await?;
                 print_attention_report(cli.format, &report)?;
@@ -263,7 +287,7 @@ async fn run(cli: Cli) -> Result<()> {
                 let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
                 let gateway = runtime.build_gateway();
                 let options = SharedBackupOptions {
-                    out_dir: args.out,
+                    out_dir: resolve_backup_dir(&runtime, args.out),
                     manifest_path: args.manifest,
                     reuse_manifest: args.reuse_manifest,
                     limit: args.limit,
@@ -294,7 +318,7 @@ async fn run(cli: Cli) -> Result<()> {
                                 "`shared declutter --apply` requires `--yes` when `--no-interactive` is set"
                             );
                         }
-                        confirm_shared_declutter_apply(&plan)?;
+                        confirm_shared_declutter_apply(&plan, account_label(&runtime).as_deref())?;
                     }
                     let pre_mutation_release = if plan.actionable_count > 0 {
                         Some(
@@ -392,7 +416,7 @@ async fn run(cli: Cli) -> Result<()> {
                     if cli.no_interactive {
                         bail!("`unshare --apply` requires `--yes` when `--no-interactive` is set");
                     }
-                    confirm_unshare_apply(&plan)?;
+                    confirm_unshare_apply(&plan, account_label(&runtime).as_deref())?;
                 }
 
                 let pre_mutation_release = if plan.actionable_count > 0 {
@@ -447,7 +471,7 @@ async fn run(cli: Cli) -> Result<()> {
                     if cli.no_interactive {
                         bail!("`trash --apply` requires `--yes` when `--no-interactive` is set");
                     }
-                    confirm_trash_apply(&plan)?;
+                    confirm_trash_apply(&plan, account_label(&runtime).as_deref())?;
                 }
 
                 let pre_mutation_release = if plan.actionable_count > 0 {
@@ -494,7 +518,7 @@ async fn run(cli: Cli) -> Result<()> {
                     if cli.no_interactive {
                         bail!("`move --apply` requires `--yes` when `--no-interactive` is set");
                     }
-                    confirm_move_apply(&plan)?;
+                    confirm_move_apply(&plan, account_label(&runtime).as_deref())?;
                 }
 
                 let will_mutate = plan.actionable_count > 0
@@ -588,6 +612,9 @@ async fn run(cli: Cli) -> Result<()> {
                 .await
             }
         },
+        Command::Account(command) => {
+            handle_account_command(&runtime, command, cli.format, cli.no_interactive)
+        }
     }
 }
 
@@ -605,6 +632,9 @@ struct Cli {
 
     #[arg(long, global = true)]
     db: Option<String>,
+
+    #[arg(long, global = true)]
+    account: Option<String>,
 
     #[arg(long, global = true, value_enum)]
     backend: Option<BackendKind>,
@@ -730,6 +760,76 @@ enum Command {
         after_help = "Examples:\n  drive-warden db stats\n  drive-warden db vacuum"
     )]
     Db(DbCommand),
+    #[command(subcommand)]
+    #[command(
+        about = "Manage warden accounts (personal, work, ...)",
+        after_help = "Examples:\n  drive-warden account add personal --email me@gmail.com\n  drive-warden account add work --email me@company.com\n  drive-warden account list\n  drive-warden account use work\n  drive-warden --account work sync"
+    )]
+    Account(AccountCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum AccountCommand {
+    #[command(
+        about = "Create a new account, optionally adopting an existing database",
+        after_help = "Examples:\n  drive-warden account add personal --email me@gmail.com\n  drive-warden account add work --empty\n  drive-warden account add personal --adopt   # adopt legacy data/ non-interactively"
+    )]
+    Add(AccountAddArgs),
+    #[command(about = "List configured accounts")]
+    List,
+    #[command(about = "Set the current account")]
+    Use(AccountNameArgs),
+    #[command(about = "Print the current account")]
+    Current,
+    #[command(about = "Show an account's binding and paths")]
+    Show(AccountShowArgs),
+    #[command(
+        about = "Remove an account's local directory (does not touch Google Drive)",
+        after_help = "The remote drive-warden-db backup in that Drive is left intact."
+    )]
+    Remove(AccountRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+struct AccountAddArgs {
+    /// Account name (lowercase letters, digits, `-`, `_`).
+    name: String,
+    /// Declared Google email; login must authenticate as this address.
+    #[arg(long)]
+    email: Option<String>,
+    /// Create an empty account even if a legacy database could be adopted.
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with_all = ["adopt", "adopt_db"])]
+    empty: bool,
+    /// Adopt the legacy database without an interactive prompt.
+    #[arg(long, action = ArgAction::SetTrue)]
+    adopt: bool,
+    /// Adopt a specific database file instead of the default legacy location.
+    #[arg(long)]
+    adopt_db: Option<String>,
+    /// Token cache to adopt alongside `--adopt-db`.
+    #[arg(long, requires = "adopt_db")]
+    adopt_tokens: Option<String>,
+    /// Session file to adopt alongside `--adopt-db`.
+    #[arg(long, requires = "adopt_db")]
+    adopt_session: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct AccountNameArgs {
+    name: String,
+}
+
+#[derive(Debug, Args)]
+struct AccountShowArgs {
+    /// Account to show; defaults to the current account.
+    name: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct AccountRemoveArgs {
+    name: String,
+    #[arg(long, action = ArgAction::SetTrue)]
+    yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -801,8 +901,10 @@ enum BackupCommand {
 
 #[derive(Debug, Args)]
 struct SharedBackupArgs {
-    #[arg(long, default_value = "backups/shared-with-me")]
-    out: PathBuf,
+    /// Output directory; defaults to the account's `backups/shared-with-me`
+    /// (account mode) or `backups/shared-with-me` (legacy).
+    #[arg(long)]
+    out: Option<PathBuf>,
     #[arg(long)]
     manifest: Option<PathBuf>,
     #[arg(long = "reuse-manifest")]
@@ -1089,6 +1191,10 @@ struct AppRuntime {
     reports_output_dir: PathBuf,
     stale_threshold_days: i64,
     remote_db: RemoteDbConfig,
+    /// The selected account, or `None` in legacy single-db / escape-hatch mode.
+    pub(crate) account: Option<account::AccountContext>,
+    /// Root directory under which named account directories live.
+    accounts_root: PathBuf,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1101,6 +1207,13 @@ struct FileConfig {
     database: FileDatabaseConfig,
     #[serde(default)]
     reports: FileReportsConfig,
+    #[serde(default)]
+    accounts: FileAccountsConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FileAccountsConfig {
+    root: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1147,53 +1260,136 @@ impl AppRuntime {
             .backend
             .or_else(|| config.backend.kind.as_deref().and_then(BackendKind::from_config))
             .unwrap_or(BackendKind::Google);
-        let db_path = cli
-            .db
-            .clone()
-            .or(config.database.path)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("data/inventory.db"));
-        let runtime_dir =
-            db_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("data"));
+        // Resolve which account (if any) this invocation targets.
+        let accounts_root = account::accounts_root_from(
+            std::env::var("DRIVE_WARDEN_ACCOUNTS_ROOT").ok(),
+            config.accounts.root.as_deref(),
+        );
+        let env_account = std::env::var("DRIVE_WARDEN_ACCOUNT").ok();
+        let current = account::read_current(&accounts_root)?;
+        let accounts_exist = !account::list_account_names(&accounts_root)?.is_empty();
+        let resolution = account::resolve_account(
+            cli.db.is_some(),
+            cli.account.as_deref(),
+            env_account.as_deref(),
+            current.as_deref(),
+            accounts_exist,
+            command_needs_account(&cli.command),
+        )?;
+        let account = match resolution {
+            account::AccountResolution::Named(name) => {
+                Some(account::AccountContext::load(&accounts_root, &name)?)
+            }
+            account::AccountResolution::Legacy => None,
+        };
+
+        // In account mode, the db and runtime files live in the account dir;
+        // otherwise fall back to the legacy `--db`/config/default resolution.
+        let (db_path, runtime_dir) = match &account {
+            Some(ctx) => (ctx.db_path(), ctx.dir.clone()),
+            None => {
+                let db_path = cli
+                    .db
+                    .clone()
+                    .or_else(|| config.database.path.clone())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("data/inventory.db"));
+                let runtime_dir = db_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("data"));
+                (db_path, runtime_dir)
+            }
+        };
+
         let fixture_dir = config
             .backend
             .fixture_dir
+            .clone()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("tests/fixtures/drive_small"));
-        let reports_output_dir = config
-            .reports
-            .output_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("reports"));
-        let google_credentials_path =
-            env_var_os_any(&["DRIVE_WARDEN_CREDENTIALS", "GDRIVE_OPTIMIZE_CREDENTIALS"])
-                .map(PathBuf::from)
-                .or_else(|| config.google.credentials_path.map(PathBuf::from))
-                .unwrap_or_else(|| runtime_dir.join("credentials.json"));
-        let google_token_path = env_var_os_any(&["DRIVE_WARDEN_TOKENS", "GDRIVE_OPTIMIZE_TOKENS"])
-            .map(PathBuf::from)
-            .or_else(|| config.google.token_path.map(PathBuf::from))
-            .unwrap_or_else(|| runtime_dir.join("google-tokens.json"));
-        let google_session_path =
-            env_var_os_any(&["DRIVE_WARDEN_GOOGLE_SESSION", "GDRIVE_OPTIMIZE_GOOGLE_SESSION"])
-                .map(PathBuf::from)
-                .or_else(|| config.google.session_path.map(PathBuf::from))
-                .unwrap_or_else(|| runtime_dir.join("google-session.json"));
 
-        let (remote_folder_name, legacy_folder_names) = match config.database.remote_folder_name {
+        // Reports default into the account dir; legacy keeps config/default.
+        let reports_output_dir = match &account {
+            Some(ctx) => ctx.reports_dir(),
+            None => config
+                .reports
+                .output_dir
+                .clone()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("reports")),
+        };
+
+        // Credentials/token/session resolution differs by mode. In account
+        // mode tokens/session live in the account dir while credentials.json is
+        // shared at the accounts-root parent; legacy mode is unchanged.
+        let (google_credentials_path, google_token_path, google_session_path) = match &account {
+            Some(ctx) => {
+                let shared_credentials = accounts_root
+                    .parent()
+                    .map(|parent| parent.join("credentials.json"))
+                    .unwrap_or_else(|| PathBuf::from("data/credentials.json"));
+                let credentials =
+                    env_var_os_any(&["DRIVE_WARDEN_CREDENTIALS", "GDRIVE_OPTIMIZE_CREDENTIALS"])
+                        .map(PathBuf::from)
+                        .or_else(|| ctx.toml.overrides.credentials_path.clone().map(PathBuf::from))
+                        .unwrap_or(shared_credentials);
+                let token = env_var_os_any(&["DRIVE_WARDEN_TOKENS", "GDRIVE_OPTIMIZE_TOKENS"])
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| runtime_dir.join("google-tokens.json"));
+                let session = env_var_os_any(&[
+                    "DRIVE_WARDEN_GOOGLE_SESSION",
+                    "GDRIVE_OPTIMIZE_GOOGLE_SESSION",
+                ])
+                .map(PathBuf::from)
+                .unwrap_or_else(|| runtime_dir.join("google-session.json"));
+                (credentials, token, session)
+            }
+            None => {
+                let credentials =
+                    env_var_os_any(&["DRIVE_WARDEN_CREDENTIALS", "GDRIVE_OPTIMIZE_CREDENTIALS"])
+                        .map(PathBuf::from)
+                        .or_else(|| config.google.credentials_path.clone().map(PathBuf::from))
+                        .unwrap_or_else(|| runtime_dir.join("credentials.json"));
+                let token = env_var_os_any(&["DRIVE_WARDEN_TOKENS", "GDRIVE_OPTIMIZE_TOKENS"])
+                    .map(PathBuf::from)
+                    .or_else(|| config.google.token_path.clone().map(PathBuf::from))
+                    .unwrap_or_else(|| runtime_dir.join("google-tokens.json"));
+                let session = env_var_os_any(&[
+                    "DRIVE_WARDEN_GOOGLE_SESSION",
+                    "GDRIVE_OPTIMIZE_GOOGLE_SESSION",
+                ])
+                .map(PathBuf::from)
+                .or_else(|| config.google.session_path.clone().map(PathBuf::from))
+                .unwrap_or_else(|| runtime_dir.join("google-session.json"));
+                (credentials, token, session)
+            }
+        };
+
+        // Remote DB config honors per-account folder/db-name overrides.
+        let (remote_folder_name, legacy_folder_names) = match account
+            .as_ref()
+            .and_then(|ctx| ctx.toml.remote.folder_name.clone())
+            .or_else(|| config.database.remote_folder_name.clone())
+        {
             Some(name) => (name, Vec::new()),
             None => {
                 (DEFAULT_REMOTE_DB_FOLDER_NAME.into(), vec![LEGACY_REMOTE_DB_FOLDER_NAME.into()])
             }
         };
         let remote_db = RemoteDbConfig {
-            folder_id: config.database.remote_folder_id,
+            folder_id: config.database.remote_folder_id.clone(),
             folder_name: remote_folder_name,
             legacy_folder_names,
-            db_name: config.database.remote_db_name.unwrap_or_else(|| "inventory.db".into()),
+            db_name: account
+                .as_ref()
+                .and_then(|ctx| ctx.toml.remote.db_name.clone())
+                .or_else(|| config.database.remote_db_name.clone())
+                .unwrap_or_else(|| "inventory.db".into()),
             manifest_name: config
                 .database
                 .remote_manifest_name
+                .clone()
                 .unwrap_or_else(|| "inventory.db.manifest.json".into()),
         };
 
@@ -1208,6 +1404,8 @@ impl AppRuntime {
             reports_output_dir,
             stale_threshold_days: config.reports.stale_threshold_days.unwrap_or(730),
             remote_db,
+            account,
+            accounts_root,
         })
     }
 
@@ -1227,6 +1425,214 @@ impl AppRuntime {
 
 fn env_var_os_any(names: &[&str]) -> Option<std::ffi::OsString> {
     names.iter().find_map(std::env::var_os)
+}
+
+/// Whether a command requires a resolved account in account mode. Commands that
+/// manage accounts themselves, or need no Drive state, do not. When this is
+/// false and no account is selected, resolution falls back to legacy paths
+/// instead of erroring.
+fn command_needs_account(command: &Command) -> bool {
+    !matches!(command, Command::Completions(_) | Command::Account(_))
+}
+
+/// A short `name (email)` label for the active account, for confirmation prompts.
+fn account_label(runtime: &AppRuntime) -> Option<String> {
+    runtime
+        .account
+        .as_ref()
+        .map(|account| format!("{} ({})", account.name, account.bound_email().unwrap_or("unbound")))
+}
+
+/// Warn (never block) if the active session does not match the selected
+/// account. For read-class commands that already talk to the account's Drive.
+async fn warn_identity(gateway: &dyn DriveGateway, runtime: &AppRuntime) {
+    let _ = identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Warn)
+        .await;
+}
+
+/// Print the active account on stderr (skipped when quiet or emitting JSON).
+fn print_account_header(cli: &Cli, runtime: &AppRuntime) {
+    if cli.quiet || !matches!(cli.format, OutputFormat::Table) {
+        return;
+    }
+    if let Some(label) = account_label(runtime) {
+        eprintln!("\u{25b6} account: {label}");
+    }
+}
+
+fn handle_account_command(
+    runtime: &AppRuntime,
+    command: AccountCommand,
+    _format: OutputFormat,
+    no_interactive: bool,
+) -> Result<()> {
+    match command {
+        AccountCommand::Add(args) => account_add(runtime, args, no_interactive),
+        AccountCommand::List => account_list(runtime),
+        AccountCommand::Use(args) => {
+            let root = &runtime.accounts_root;
+            if !account::account_exists(root, &args.name) {
+                bail!(
+                    "account `{}` does not exist; create it with `drive-warden account add {}`",
+                    args.name,
+                    args.name
+                );
+            }
+            account::write_current(root, &args.name)?;
+            println!("Current account is now `{}`.", args.name);
+            Ok(())
+        }
+        AccountCommand::Current => {
+            match account::read_current(&runtime.accounts_root)? {
+                Some(name) => println!("{name}"),
+                None => println!("(no current account set)"),
+            }
+            Ok(())
+        }
+        AccountCommand::Show(args) => account_show(runtime, args),
+        AccountCommand::Remove(args) => account_remove(runtime, args),
+    }
+}
+
+fn account_add(runtime: &AppRuntime, args: AccountAddArgs, no_interactive: bool) -> Result<()> {
+    let root = &runtime.accounts_root;
+    account::validate_account_name(&args.name)?;
+    if account::account_exists(root, &args.name) {
+        bail!("account `{}` already exists", args.name);
+    }
+    let is_first = account::list_account_names(root)?.is_empty();
+
+    let sources = if let Some(db) = &args.adopt_db {
+        Some(account::AdoptionSources {
+            db: PathBuf::from(db),
+            tokens: args.adopt_tokens.as_deref().map(PathBuf::from),
+            session: args.adopt_session.as_deref().map(PathBuf::from),
+            reports_dir: None,
+        })
+    } else if !args.empty {
+        account::legacy_db_present(root).map(|_| account::legacy_adoption_sources(root))
+    } else {
+        None
+    };
+
+    match sources {
+        Some(sources) => {
+            if !args.adopt {
+                if no_interactive {
+                    bail!(
+                        "a database is available to adopt at `{}`; pass `--adopt` to adopt it or `--empty` for a fresh account",
+                        sources.db.display()
+                    );
+                }
+                println!("About to adopt into account `{}`:", args.name);
+                println!("  database: {}", sources.db.display());
+                for (label, path) in [
+                    ("tokens ", &sources.tokens),
+                    ("session", &sources.session),
+                    ("reports", &sources.reports_dir),
+                ] {
+                    if let Some(path) = path.as_ref().filter(|p| p.exists()) {
+                        println!("  {label}: {}", path.display());
+                    }
+                }
+                if !prompt_yes_no("Proceed?")? {
+                    bail!("adoption cancelled");
+                }
+            }
+            let moved =
+                account::adopt_into_account(root, &args.name, &sources, args.email.clone())?;
+            println!("Adopted {} item(s) into account `{}`.", moved.len(), args.name);
+        }
+        None => {
+            let toml_path = account::account_toml_path(&root.join(&args.name));
+            account::save_account_toml(&toml_path, &account::AccountToml::new(args.email.clone()))?;
+            println!("Created account `{}`.", args.name);
+        }
+    }
+
+    if is_first {
+        account::write_current(root, &args.name)?;
+        println!("Set current account to `{}`.", args.name);
+    }
+    Ok(())
+}
+
+fn account_list(runtime: &AppRuntime) -> Result<()> {
+    let root = &runtime.accounts_root;
+    let names = account::list_account_names(root)?;
+    let current = account::read_current(root)?;
+    if names.is_empty() {
+        println!("No accounts configured. Create one with `drive-warden account add <name>`.");
+    } else {
+        for name in &names {
+            let marker = if current.as_deref() == Some(name.as_str()) { "*" } else { " " };
+            let ctx = account::AccountContext::load(root, name)?;
+            let email = ctx.bound_email().unwrap_or("(unbound)");
+            let bytes = std::fs::metadata(ctx.db_path()).map(|meta| meta.len()).unwrap_or(0);
+            println!(
+                "{marker} {name:<16} {email:<30} {:<9} {} KiB",
+                format!("{:?}", ctx.toml.identity.state).to_lowercase(),
+                bytes / 1024
+            );
+        }
+    }
+    if let Some(db) = account::legacy_db_present(root) {
+        println!();
+        println!("Note: an un-adopted legacy database exists at `{}`.", db.display());
+        println!("      Adopt it with `drive-warden account add <name>`.");
+    }
+    Ok(())
+}
+
+fn account_show(runtime: &AppRuntime, args: AccountShowArgs) -> Result<()> {
+    let root = &runtime.accounts_root;
+    let name = match args.name {
+        Some(name) => name,
+        None => account::read_current(root)?
+            .context("no account specified and no current account set")?,
+    };
+    let ctx = account::AccountContext::load(root, &name)?;
+    println!("account:    {}", ctx.name);
+    println!("dir:        {}", ctx.dir.display());
+    println!("state:      {}", format!("{:?}", ctx.toml.identity.state).to_lowercase());
+    println!("email:      {}", ctx.bound_email().unwrap_or("(unbound)"));
+    println!("account_id: {}", ctx.bound_account_id().unwrap_or("(none)"));
+    println!("db:         {}", ctx.db_path().display());
+    println!("reports:    {}", ctx.reports_dir().display());
+    Ok(())
+}
+
+fn account_remove(runtime: &AppRuntime, args: AccountRemoveArgs) -> Result<()> {
+    let root = &runtime.accounts_root;
+    if !account::account_exists(root, &args.name) {
+        bail!("account `{}` does not exist", args.name);
+    }
+    if account::read_current(root)?.as_deref() == Some(args.name.as_str()) {
+        bail!(
+            "`{}` is the current account; switch with `drive-warden account use <other>` before removing it",
+            args.name
+        );
+    }
+    if !args.yes {
+        bail!(
+            "removing account `{}` deletes its local directory (the remote Drive backup is left intact); pass `--yes` to confirm",
+            args.name
+        );
+    }
+    let dir = root.join(&args.name);
+    std::fs::remove_dir_all(&dir)
+        .with_context(|| format!("failed to remove `{}`", dir.display()))?;
+    println!("Removed account `{}` (local only; remote backup untouched).", args.name);
+    Ok(())
+}
+
+fn prompt_yes_no(question: &str) -> Result<bool> {
+    print!("{question} [y/N]: ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let normalized = input.trim().to_ascii_lowercase();
+    Ok(normalized == "y" || normalized == "yes")
 }
 
 fn load_file_config(path: &Path) -> Result<FileConfig> {
@@ -1328,6 +1734,15 @@ async fn fetch_account_about_best_effort(gateway: &dyn DriveGateway) -> Option<A
 fn resolve_report_dir(runtime: &AppRuntime, output: Option<&str>) -> PathBuf {
     output.map(PathBuf::from).unwrap_or_else(|| {
         runtime.reports_output_dir.join(Utc::now().format("%Y-%m-%d").to_string())
+    })
+}
+
+/// Resolve the shared-with-me backup output dir: explicit `--out`, else the
+/// account's `backups/shared-with-me` (account mode), else the legacy default.
+fn resolve_backup_dir(runtime: &AppRuntime, out: Option<PathBuf>) -> PathBuf {
+    out.unwrap_or_else(|| match runtime.account.as_ref() {
+        Some(account) => account.dir.join("backups/shared-with-me"),
+        None => PathBuf::from("backups/shared-with-me"),
     })
 }
 
@@ -2033,6 +2448,7 @@ async fn handle_remote_db_command(
 ) -> Result<()> {
     match command {
         RemoteDbCommand::Status => {
+            warn_identity(gateway, runtime).await;
             let status = build_remote_db_status(gateway, runtime, false).await?;
             print_remote_db_status(format, &status)?;
             Ok(())
@@ -2124,7 +2540,8 @@ async fn handle_remote_db_command(
                                 "`db remote release prune --apply` requires explicit `--yes`; run without `--apply` first to preview"
                             );
                         }
-                        let summary = apply_remote_db_release_prune(gateway, &plan).await?;
+                        let summary =
+                            apply_remote_db_release_prune(gateway, runtime, &plan).await?;
                         print_remote_db_release_prune_apply(format, &plan, &summary)?;
                         return Ok(());
                     }
@@ -2387,6 +2804,7 @@ async fn rename_remote_db_folder(
     runtime: &AppRuntime,
     args: RemoteDbRenameFolderArgs,
 ) -> Result<RemoteDbFolderRename> {
+    identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Block).await?;
     if runtime.remote_db.folder_id.is_some() {
         bail!(
             "remote DB folder rename by name is unavailable when `remote_folder_id` is configured"
@@ -2465,6 +2883,7 @@ async fn push_remote_db(
     gateway: &dyn DriveGateway,
     runtime: &AppRuntime,
 ) -> Result<RemoteDbEndpoint> {
+    identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Block).await?;
     if !runtime.db_path.exists() {
         bail!(
             "local database `{}` does not exist; run `sync` first or pull a remote DB",
@@ -2530,6 +2949,7 @@ async fn pull_remote_db(
     runtime: &AppRuntime,
     remote: &RemoteDbEndpoint,
 ) -> Result<RemoteDbEndpoint> {
+    identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Block).await?;
     validate_remote_endpoint_privacy(remote)?;
     let db_file = remote.remote_db_file()?;
     let manifest = remote
@@ -2571,6 +2991,7 @@ async fn create_remote_db_release(
     runtime: &AppRuntime,
     raw_name: &str,
 ) -> Result<RemoteDbRelease> {
+    identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Block).await?;
     if !runtime.db_path.exists() {
         bail!("local database `{}` does not exist; run `sync` first", runtime.db_path.display());
     }
@@ -2727,8 +3148,10 @@ fn release_sort_key(release: &RemoteDbReleasePruneItem) -> String {
 
 async fn apply_remote_db_release_prune(
     gateway: &dyn DriveGateway,
+    runtime: &AppRuntime,
     plan: &RemoteDbReleasePrunePlan,
 ) -> Result<RemoteDbReleasePruneApplySummary> {
+    identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Block).await?;
     let mut failures = Vec::new();
     let mut trashed_files = 0usize;
     for release in &plan.prune {
@@ -3476,7 +3899,14 @@ fn print_trash_restore_guidance(format: OutputFormat, entries: &[TrashedFileEntr
     Ok(())
 }
 
-fn confirm_unshare_apply(plan: &gdrive_core::UnsharePlan) -> Result<()> {
+fn print_account_prefix(account: Option<&str>) {
+    if let Some(account) = account {
+        print!("[account: {account}] ");
+    }
+}
+
+fn confirm_unshare_apply(plan: &gdrive_core::UnsharePlan, account: Option<&str>) -> Result<()> {
+    print_account_prefix(account);
     if let Some(retain_copy) = &plan.retain_copy {
         print!(
             "Create retained copies for {} root item(s), then apply {} actionable unshare change(s) and skip {} row(s)? [y/N]: ",
@@ -3499,7 +3929,8 @@ fn confirm_unshare_apply(plan: &gdrive_core::UnsharePlan) -> Result<()> {
     }
 }
 
-fn confirm_move_apply(plan: &gdrive_core::MovePlan) -> Result<()> {
+fn confirm_move_apply(plan: &gdrive_core::MovePlan, account: Option<&str>) -> Result<()> {
+    print_account_prefix(account);
     let destination = plan
         .destination
         .as_ref()
@@ -3529,7 +3960,8 @@ fn confirm_move_apply(plan: &gdrive_core::MovePlan) -> Result<()> {
     }
 }
 
-fn confirm_trash_apply(plan: &gdrive_core::TrashPlan) -> Result<()> {
+fn confirm_trash_apply(plan: &gdrive_core::TrashPlan, account: Option<&str>) -> Result<()> {
+    print_account_prefix(account);
     print!(
         "Move {} actionable item(s) to trash, skip {} row(s), affecting {} byte(s)? [y/N]: ",
         plan.actionable_count, plan.skipped_count, plan.total_bytes
@@ -3548,7 +3980,8 @@ fn confirm_trash_apply(plan: &gdrive_core::TrashPlan) -> Result<()> {
     }
 }
 
-fn confirm_shared_declutter_apply(plan: &SharedDeclutterPlan) -> Result<()> {
+fn confirm_shared_declutter_apply(plan: &SharedDeclutterPlan, account: Option<&str>) -> Result<()> {
+    print_account_prefix(account);
     print!(
         "Remove {} backed-up shared-with-me item(s) from My Drive and leave {} unbacked/unresolved item(s)? [y/N]: ",
         plan.actionable_count,

@@ -74,3 +74,30 @@ pub fn stdout(output: &Output) -> String {
 pub fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).expect("stderr utf8")
 }
+
+/// Run drive-warden in account mode against a temp accounts root. Writes a mock
+/// config pointing `[accounts] root` inside the temp dir and does NOT pass
+/// `--db` (so account resolution is active rather than the legacy escape hatch).
+#[allow(dead_code)]
+pub fn run_account_command(temp_dir: &TempDir, args: &[&str]) -> Output {
+    let accounts_root = temp_dir.path().join("accounts");
+    let config_path = temp_dir.path().join("account-mock.toml");
+    let contents = format!(
+        "[backend]\nkind = \"mock\"\nfixture_dir = \"tests/fixtures/drive_small\"\n\n[accounts]\nroot = \"{}\"\n",
+        accounts_root.display()
+    );
+    fs::write(&config_path, contents).expect("write account config");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_drive-warden"));
+    command.current_dir(workspace_root());
+    command.args(["--backend", "mock", "--config", config_path.to_str().expect("config path")]);
+    command.args(args);
+    command.output().expect("run drive-warden")
+}
+
+/// Account-mode invocation pinned to a specific account via `--account`.
+#[allow(dead_code)]
+pub fn run_account_in(temp_dir: &TempDir, account: &str, args: &[&str]) -> Output {
+    let mut full = vec!["--account", account];
+    full.extend_from_slice(args);
+    run_account_command(temp_dir, &full)
+}

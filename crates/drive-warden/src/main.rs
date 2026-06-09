@@ -589,6 +589,9 @@ async fn run(cli: Cli) -> Result<()> {
                 .await
             }
         },
+        Command::Account(command) => {
+            handle_account_command(&runtime, command, cli.format, cli.no_interactive)
+        }
     }
 }
 
@@ -734,6 +737,76 @@ enum Command {
         after_help = "Examples:\n  drive-warden db stats\n  drive-warden db vacuum"
     )]
     Db(DbCommand),
+    #[command(subcommand)]
+    #[command(
+        about = "Manage warden accounts (personal, work, ...)",
+        after_help = "Examples:\n  drive-warden account add personal --email me@gmail.com\n  drive-warden account add work --email me@company.com\n  drive-warden account list\n  drive-warden account use work\n  drive-warden --account work sync"
+    )]
+    Account(AccountCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum AccountCommand {
+    #[command(
+        about = "Create a new account, optionally adopting an existing database",
+        after_help = "Examples:\n  drive-warden account add personal --email me@gmail.com\n  drive-warden account add work --empty\n  drive-warden account add personal --adopt   # adopt legacy data/ non-interactively"
+    )]
+    Add(AccountAddArgs),
+    #[command(about = "List configured accounts")]
+    List,
+    #[command(about = "Set the current account")]
+    Use(AccountNameArgs),
+    #[command(about = "Print the current account")]
+    Current,
+    #[command(about = "Show an account's binding and paths")]
+    Show(AccountShowArgs),
+    #[command(
+        about = "Remove an account's local directory (does not touch Google Drive)",
+        after_help = "The remote drive-warden-db backup in that Drive is left intact."
+    )]
+    Remove(AccountRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+struct AccountAddArgs {
+    /// Account name (lowercase letters, digits, `-`, `_`).
+    name: String,
+    /// Declared Google email; login must authenticate as this address.
+    #[arg(long)]
+    email: Option<String>,
+    /// Create an empty account even if a legacy database could be adopted.
+    #[arg(long, action = ArgAction::SetTrue)]
+    empty: bool,
+    /// Adopt the legacy database without an interactive prompt.
+    #[arg(long, action = ArgAction::SetTrue)]
+    adopt: bool,
+    /// Adopt a specific database file instead of the default legacy location.
+    #[arg(long)]
+    adopt_db: Option<String>,
+    /// Token cache to adopt alongside `--adopt-db`.
+    #[arg(long)]
+    adopt_tokens: Option<String>,
+    /// Session file to adopt alongside `--adopt-db`.
+    #[arg(long)]
+    adopt_session: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct AccountNameArgs {
+    name: String,
+}
+
+#[derive(Debug, Args)]
+struct AccountShowArgs {
+    /// Account to show; defaults to the current account.
+    name: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct AccountRemoveArgs {
+    name: String,
+    #[arg(long, action = ArgAction::SetTrue)]
+    yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1332,8 +1405,181 @@ fn env_var_os_any(names: &[&str]) -> Option<std::ffi::OsString> {
 /// false and no account is selected, resolution falls back to legacy paths
 /// instead of erroring.
 fn command_needs_account(command: &Command) -> bool {
-    // Phase 3 extends this to also exclude `Command::Account(_)`.
-    !matches!(command, Command::Completions(_))
+    !matches!(command, Command::Completions(_) | Command::Account(_))
+}
+
+fn handle_account_command(
+    runtime: &AppRuntime,
+    command: AccountCommand,
+    _format: OutputFormat,
+    no_interactive: bool,
+) -> Result<()> {
+    match command {
+        AccountCommand::Add(args) => account_add(runtime, args, no_interactive),
+        AccountCommand::List => account_list(runtime),
+        AccountCommand::Use(args) => {
+            let root = &runtime.accounts_root;
+            if !account::account_exists(root, &args.name) {
+                bail!(
+                    "account `{}` does not exist; create it with `drive-warden account add {}`",
+                    args.name,
+                    args.name
+                );
+            }
+            account::write_current(root, &args.name)?;
+            println!("Current account is now `{}`.", args.name);
+            Ok(())
+        }
+        AccountCommand::Current => {
+            match account::read_current(&runtime.accounts_root)? {
+                Some(name) => println!("{name}"),
+                None => println!("(no current account set)"),
+            }
+            Ok(())
+        }
+        AccountCommand::Show(args) => account_show(runtime, args),
+        AccountCommand::Remove(args) => account_remove(runtime, args),
+    }
+}
+
+fn account_add(runtime: &AppRuntime, args: AccountAddArgs, no_interactive: bool) -> Result<()> {
+    let root = &runtime.accounts_root;
+    account::validate_account_name(&args.name)?;
+    if account::account_exists(root, &args.name) {
+        bail!("account `{}` already exists", args.name);
+    }
+    let is_first = account::list_account_names(root)?.is_empty();
+
+    let sources = if let Some(db) = &args.adopt_db {
+        Some(account::AdoptionSources {
+            db: PathBuf::from(db),
+            tokens: args.adopt_tokens.as_deref().map(PathBuf::from),
+            session: args.adopt_session.as_deref().map(PathBuf::from),
+            reports_dir: None,
+        })
+    } else if !args.empty {
+        account::legacy_db_present(root).map(|_| account::legacy_adoption_sources(root))
+    } else {
+        None
+    };
+
+    match sources {
+        Some(sources) => {
+            if !args.adopt {
+                if no_interactive {
+                    bail!(
+                        "a database is available to adopt at `{}`; pass `--adopt` to adopt it or `--empty` for a fresh account",
+                        sources.db.display()
+                    );
+                }
+                println!("About to adopt into account `{}`:", args.name);
+                println!("  database: {}", sources.db.display());
+                for (label, path) in [
+                    ("tokens ", &sources.tokens),
+                    ("session", &sources.session),
+                    ("reports", &sources.reports_dir),
+                ] {
+                    if let Some(path) = path.as_ref().filter(|p| p.exists()) {
+                        println!("  {label}: {}", path.display());
+                    }
+                }
+                if !prompt_yes_no("Proceed?")? {
+                    bail!("adoption cancelled");
+                }
+            }
+            let moved =
+                account::adopt_into_account(root, &args.name, &sources, args.email.clone())?;
+            println!("Adopted {} item(s) into account `{}`.", moved.len(), args.name);
+        }
+        None => {
+            let toml_path = account::account_toml_path(&root.join(&args.name));
+            account::save_account_toml(&toml_path, &account::AccountToml::new(args.email.clone()))?;
+            println!("Created account `{}`.", args.name);
+        }
+    }
+
+    if is_first {
+        account::write_current(root, &args.name)?;
+        println!("Set current account to `{}`.", args.name);
+    }
+    Ok(())
+}
+
+fn account_list(runtime: &AppRuntime) -> Result<()> {
+    let root = &runtime.accounts_root;
+    let names = account::list_account_names(root)?;
+    let current = account::read_current(root)?;
+    if names.is_empty() {
+        println!("No accounts configured. Create one with `drive-warden account add <name>`.");
+    } else {
+        for name in &names {
+            let marker = if current.as_deref() == Some(name.as_str()) { "*" } else { " " };
+            let ctx = account::AccountContext::load(root, name)?;
+            let email = ctx.bound_email().unwrap_or("(unbound)");
+            let bytes = std::fs::metadata(ctx.db_path()).map(|meta| meta.len()).unwrap_or(0);
+            println!(
+                "{marker} {name:<16} {email:<30} {:<9} {} KiB",
+                format!("{:?}", ctx.toml.identity.state).to_lowercase(),
+                bytes / 1024
+            );
+        }
+    }
+    if let Some(db) = account::legacy_db_present(root) {
+        println!();
+        println!("Note: an un-adopted legacy database exists at `{}`.", db.display());
+        println!("      Adopt it with `drive-warden account add <name>`.");
+    }
+    Ok(())
+}
+
+fn account_show(runtime: &AppRuntime, args: AccountShowArgs) -> Result<()> {
+    let root = &runtime.accounts_root;
+    let name = match args.name {
+        Some(name) => name,
+        None => account::read_current(root)?
+            .context("no account specified and no current account set")?,
+    };
+    let ctx = account::AccountContext::load(root, &name)?;
+    println!("account:    {}", ctx.name);
+    println!("dir:        {}", ctx.dir.display());
+    println!("state:      {}", format!("{:?}", ctx.toml.identity.state).to_lowercase());
+    println!("email:      {}", ctx.bound_email().unwrap_or("(unbound)"));
+    println!("account_id: {}", ctx.bound_account_id().unwrap_or("(none)"));
+    println!("db:         {}", ctx.db_path().display());
+    println!("reports:    {}", ctx.reports_dir().display());
+    Ok(())
+}
+
+fn account_remove(runtime: &AppRuntime, args: AccountRemoveArgs) -> Result<()> {
+    let root = &runtime.accounts_root;
+    if !account::account_exists(root, &args.name) {
+        bail!("account `{}` does not exist", args.name);
+    }
+    if account::read_current(root)?.as_deref() == Some(args.name.as_str()) {
+        bail!(
+            "`{}` is the current account; switch with `drive-warden account use <other>` before removing it",
+            args.name
+        );
+    }
+    if !args.yes {
+        bail!(
+            "removing account `{}` deletes its local directory (the remote Drive backup is left intact); pass `--yes` to confirm",
+            args.name
+        );
+    }
+    let dir = root.join(&args.name);
+    std::fs::remove_dir_all(&dir).with_context(|| format!("failed to remove `{}`", dir.display()))?;
+    println!("Removed account `{}` (local only; remote backup untouched).", args.name);
+    Ok(())
+}
+
+fn prompt_yes_no(question: &str) -> Result<bool> {
+    print!("{question} [y/N]: ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let normalized = input.trim().to_ascii_lowercase();
+    Ok(normalized == "y" || normalized == "yes")
 }
 
 fn load_file_config(path: &Path) -> Result<FileConfig> {

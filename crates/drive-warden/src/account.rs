@@ -287,6 +287,118 @@ impl AccountContext {
     }
 }
 
+/// Source files for adopting an existing install into an account.
+#[derive(Debug, Clone)]
+pub struct AdoptionSources {
+    pub db: PathBuf,
+    pub tokens: Option<PathBuf>,
+    pub session: Option<PathBuf>,
+    pub reports_dir: Option<PathBuf>,
+}
+
+/// Default legacy layout: `data/inventory.db` (+ sidecars), tokens/session in
+/// `data/`, and the top-level `reports/` dir. The accounts root's parent is the
+/// legacy data dir; its grandparent is the workspace holding `reports/`.
+pub fn legacy_adoption_sources(accounts_root: &Path) -> AdoptionSources {
+    let data_dir =
+        accounts_root.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("data"));
+    let workspace =
+        data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    AdoptionSources {
+        db: data_dir.join("inventory.db"),
+        tokens: Some(data_dir.join("google-tokens.json")),
+        session: Some(data_dir.join("google-session.json")),
+        reports_dir: Some(workspace.join("reports")),
+    }
+}
+
+/// The default legacy database path if it still exists (un-adopted).
+pub fn legacy_db_present(accounts_root: &Path) -> Option<PathBuf> {
+    let db = legacy_adoption_sources(accounts_root).db;
+    db.exists().then_some(db)
+}
+
+/// Whether a named account already exists (has an `account.toml`).
+pub fn account_exists(accounts_root: &Path, name: &str) -> bool {
+    account_toml_path(&accounts_root.join(name)).exists()
+}
+
+fn move_if_exists(src: &Path, dst: &Path, moved: &mut Vec<String>) -> Result<()> {
+    if !src.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create `{}`", parent.display()))?;
+    }
+    std::fs::rename(src, dst)
+        .with_context(|| format!("failed to move `{}` to `{}`", src.display(), dst.display()))?;
+    moved.push(dst.display().to_string());
+    Ok(())
+}
+
+/// Move the database plus its sidecars (`-wal`, `-shm`, `.before-*` snapshots)
+/// into `target_dir`, canonicalizing the base name to `inventory.db`.
+fn move_db_with_sidecars(db: &Path, target_dir: &Path, moved: &mut Vec<String>) -> Result<()> {
+    let src_name =
+        db.file_name().and_then(|n| n.to_str()).context("invalid database file name")?.to_string();
+    let parent = db.parent().unwrap_or_else(|| Path::new("."));
+    let mut siblings: Vec<(PathBuf, String)> = Vec::new();
+    for entry in std::fs::read_dir(parent)
+        .with_context(|| format!("failed to read `{}`", parent.display()))?
+    {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == src_name
+            || name.starts_with(&format!("{src_name}-"))
+            || name.starts_with(&format!("{src_name}."))
+        {
+            siblings.push((entry.path(), name));
+        }
+    }
+    for (path, name) in siblings {
+        let suffix = &name[src_name.len()..];
+        move_if_exists(&path, &target_dir.join(format!("inventory.db{suffix}")), moved)?;
+    }
+    Ok(())
+}
+
+/// Adopt an existing install into a new account, moving files in and writing
+/// `account.toml` last as a completion sentinel. Re-running after a partial
+/// move resumes (moves whatever remains, then writes the sentinel).
+pub fn adopt_into_account(
+    accounts_root: &Path,
+    name: &str,
+    sources: &AdoptionSources,
+    email: Option<String>,
+) -> Result<Vec<String>> {
+    validate_account_name(name)?;
+    let target = accounts_root.join(name);
+    let toml_path = account_toml_path(&target);
+    if toml_path.exists() {
+        bail!("account `{name}` already exists at `{}`", target.display());
+    }
+    std::fs::create_dir_all(&target)
+        .with_context(|| format!("failed to create account dir `{}`", target.display()))?;
+    let mut moved = Vec::new();
+    if sources.db.exists() {
+        move_db_with_sidecars(&sources.db, &target, &mut moved)?;
+    } else if !target.join("inventory.db").exists() {
+        bail!("database to adopt was not found at `{}`", sources.db.display());
+    }
+    if let Some(tokens) = &sources.tokens {
+        move_if_exists(tokens, &target.join("google-tokens.json"), &mut moved)?;
+    }
+    if let Some(session) = &sources.session {
+        move_if_exists(session, &target.join("google-session.json"), &mut moved)?;
+    }
+    if let Some(reports) = &sources.reports_dir {
+        move_if_exists(reports, &target.join("reports"), &mut moved)?;
+    }
+    save_account_toml(&toml_path, &AccountToml::new(email))?;
+    Ok(moved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +447,38 @@ mod tests {
             .unwrap();
         std::fs::create_dir_all(root.join("not-an-account")).unwrap();
         assert_eq!(list_account_names(root).unwrap(), vec!["personal", "work"]);
+    }
+
+    #[test]
+    fn adopts_legacy_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let data = workspace.join("data");
+        let accounts_root = data.join("accounts");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("inventory.db"), b"db").unwrap();
+        std::fs::write(data.join("inventory.db-wal"), b"wal").unwrap();
+        std::fs::write(data.join("inventory.db.before-x"), b"snap").unwrap();
+        std::fs::write(data.join("google-tokens.json"), b"tok").unwrap();
+        std::fs::write(data.join("credentials.json"), b"cred").unwrap();
+        std::fs::create_dir_all(workspace.join("reports")).unwrap();
+        std::fs::write(workspace.join("reports/a.md"), b"r").unwrap();
+
+        let sources = legacy_adoption_sources(&accounts_root);
+        let moved =
+            adopt_into_account(&accounts_root, "personal", &sources, Some("me@x.com".into()))
+                .unwrap();
+        assert!(!moved.is_empty());
+        let acct = accounts_root.join("personal");
+        assert!(acct.join("inventory.db").exists());
+        assert!(acct.join("inventory.db-wal").exists());
+        assert!(acct.join("inventory.db.before-x").exists());
+        assert!(acct.join("google-tokens.json").exists());
+        assert!(acct.join("reports/a.md").exists());
+        assert!(acct.join("account.toml").exists());
+        // credentials stay shared at the data root; original db moved away
+        assert!(data.join("credentials.json").exists());
+        assert!(!data.join("inventory.db").exists());
     }
 
     #[test]

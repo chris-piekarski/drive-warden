@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::{io, io::Write};
 
 mod account;
+mod identity;
 mod shared_backup;
 mod shared_declutter;
 
@@ -64,6 +65,7 @@ fn init_tracing(verbose: u8, quiet: bool) {
 
 async fn run(cli: Cli) -> Result<()> {
     let runtime = AppRuntime::from_cli(&cli)?;
+    print_account_header(&cli, &runtime);
 
     match cli.command {
         Command::Completions(args) => {
@@ -119,6 +121,12 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Sync(args) => {
             let repository = SqliteInventoryRepository::new(&runtime.db_path)?;
             let gateway = runtime.build_gateway();
+            identity::ensure_account_identity(
+                gateway.as_ref(),
+                &runtime,
+                identity::IdentityCheckMode::Warn,
+            )
+            .await?;
             let summary = sync_inventory(gateway.as_ref(), &repository, args.full)
                 .await
                 .map_err(|error| anyhow::Error::msg(decorate_sync_error(&error.to_string())))?;
@@ -295,7 +303,7 @@ async fn run(cli: Cli) -> Result<()> {
                                 "`shared declutter --apply` requires `--yes` when `--no-interactive` is set"
                             );
                         }
-                        confirm_shared_declutter_apply(&plan)?;
+                        confirm_shared_declutter_apply(&plan, account_label(&runtime).as_deref())?;
                     }
                     let pre_mutation_release = if plan.actionable_count > 0 {
                         Some(
@@ -393,7 +401,7 @@ async fn run(cli: Cli) -> Result<()> {
                     if cli.no_interactive {
                         bail!("`unshare --apply` requires `--yes` when `--no-interactive` is set");
                     }
-                    confirm_unshare_apply(&plan)?;
+                    confirm_unshare_apply(&plan, account_label(&runtime).as_deref())?;
                 }
 
                 let pre_mutation_release = if plan.actionable_count > 0 {
@@ -448,7 +456,7 @@ async fn run(cli: Cli) -> Result<()> {
                     if cli.no_interactive {
                         bail!("`trash --apply` requires `--yes` when `--no-interactive` is set");
                     }
-                    confirm_trash_apply(&plan)?;
+                    confirm_trash_apply(&plan, account_label(&runtime).as_deref())?;
                 }
 
                 let pre_mutation_release = if plan.actionable_count > 0 {
@@ -495,7 +503,7 @@ async fn run(cli: Cli) -> Result<()> {
                     if cli.no_interactive {
                         bail!("`move --apply` requires `--yes` when `--no-interactive` is set");
                     }
-                    confirm_move_apply(&plan)?;
+                    confirm_move_apply(&plan, account_label(&runtime).as_deref())?;
                 }
 
                 let will_mutate = plan.actionable_count > 0
@@ -1167,7 +1175,7 @@ struct AppRuntime {
     stale_threshold_days: i64,
     remote_db: RemoteDbConfig,
     /// The selected account, or `None` in legacy single-db / escape-hatch mode.
-    account: Option<account::AccountContext>,
+    pub(crate) account: Option<account::AccountContext>,
     /// Root directory under which named account directories live.
     accounts_root: PathBuf,
 }
@@ -1406,6 +1414,24 @@ fn env_var_os_any(names: &[&str]) -> Option<std::ffi::OsString> {
 /// instead of erroring.
 fn command_needs_account(command: &Command) -> bool {
     !matches!(command, Command::Completions(_) | Command::Account(_))
+}
+
+/// A short `name (email)` label for the active account, for confirmation prompts.
+fn account_label(runtime: &AppRuntime) -> Option<String> {
+    runtime
+        .account
+        .as_ref()
+        .map(|account| format!("{} ({})", account.name, account.bound_email().unwrap_or("unbound")))
+}
+
+/// Print the active account on stderr (skipped when quiet or emitting JSON).
+fn print_account_header(cli: &Cli, runtime: &AppRuntime) {
+    if cli.quiet || !matches!(cli.format, OutputFormat::Table) {
+        return;
+    }
+    if let Some(label) = account_label(runtime) {
+        eprintln!("\u{25b6} account: {label}");
+    }
 }
 
 fn handle_account_command(
@@ -2477,7 +2503,7 @@ async fn handle_remote_db_command(
                                 "`db remote release prune --apply` requires explicit `--yes`; run without `--apply` first to preview"
                             );
                         }
-                        let summary = apply_remote_db_release_prune(gateway, &plan).await?;
+                        let summary = apply_remote_db_release_prune(gateway, runtime, &plan).await?;
                         print_remote_db_release_prune_apply(format, &plan, &summary)?;
                         return Ok(());
                     }
@@ -2740,6 +2766,7 @@ async fn rename_remote_db_folder(
     runtime: &AppRuntime,
     args: RemoteDbRenameFolderArgs,
 ) -> Result<RemoteDbFolderRename> {
+    identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Block).await?;
     if runtime.remote_db.folder_id.is_some() {
         bail!(
             "remote DB folder rename by name is unavailable when `remote_folder_id` is configured"
@@ -2818,6 +2845,7 @@ async fn push_remote_db(
     gateway: &dyn DriveGateway,
     runtime: &AppRuntime,
 ) -> Result<RemoteDbEndpoint> {
+    identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Block).await?;
     if !runtime.db_path.exists() {
         bail!(
             "local database `{}` does not exist; run `sync` first or pull a remote DB",
@@ -2883,6 +2911,7 @@ async fn pull_remote_db(
     runtime: &AppRuntime,
     remote: &RemoteDbEndpoint,
 ) -> Result<RemoteDbEndpoint> {
+    identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Block).await?;
     validate_remote_endpoint_privacy(remote)?;
     let db_file = remote.remote_db_file()?;
     let manifest = remote
@@ -2924,6 +2953,7 @@ async fn create_remote_db_release(
     runtime: &AppRuntime,
     raw_name: &str,
 ) -> Result<RemoteDbRelease> {
+    identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Block).await?;
     if !runtime.db_path.exists() {
         bail!("local database `{}` does not exist; run `sync` first", runtime.db_path.display());
     }
@@ -3080,8 +3110,10 @@ fn release_sort_key(release: &RemoteDbReleasePruneItem) -> String {
 
 async fn apply_remote_db_release_prune(
     gateway: &dyn DriveGateway,
+    runtime: &AppRuntime,
     plan: &RemoteDbReleasePrunePlan,
 ) -> Result<RemoteDbReleasePruneApplySummary> {
+    identity::ensure_account_identity(gateway, runtime, identity::IdentityCheckMode::Block).await?;
     let mut failures = Vec::new();
     let mut trashed_files = 0usize;
     for release in &plan.prune {
@@ -3829,7 +3861,14 @@ fn print_trash_restore_guidance(format: OutputFormat, entries: &[TrashedFileEntr
     Ok(())
 }
 
-fn confirm_unshare_apply(plan: &gdrive_core::UnsharePlan) -> Result<()> {
+fn print_account_prefix(account: Option<&str>) {
+    if let Some(account) = account {
+        print!("[account: {account}] ");
+    }
+}
+
+fn confirm_unshare_apply(plan: &gdrive_core::UnsharePlan, account: Option<&str>) -> Result<()> {
+    print_account_prefix(account);
     if let Some(retain_copy) = &plan.retain_copy {
         print!(
             "Create retained copies for {} root item(s), then apply {} actionable unshare change(s) and skip {} row(s)? [y/N]: ",
@@ -3852,7 +3891,8 @@ fn confirm_unshare_apply(plan: &gdrive_core::UnsharePlan) -> Result<()> {
     }
 }
 
-fn confirm_move_apply(plan: &gdrive_core::MovePlan) -> Result<()> {
+fn confirm_move_apply(plan: &gdrive_core::MovePlan, account: Option<&str>) -> Result<()> {
+    print_account_prefix(account);
     let destination = plan
         .destination
         .as_ref()
@@ -3882,7 +3922,8 @@ fn confirm_move_apply(plan: &gdrive_core::MovePlan) -> Result<()> {
     }
 }
 
-fn confirm_trash_apply(plan: &gdrive_core::TrashPlan) -> Result<()> {
+fn confirm_trash_apply(plan: &gdrive_core::TrashPlan, account: Option<&str>) -> Result<()> {
+    print_account_prefix(account);
     print!(
         "Move {} actionable item(s) to trash, skip {} row(s), affecting {} byte(s)? [y/N]: ",
         plan.actionable_count, plan.skipped_count, plan.total_bytes
@@ -3901,7 +3942,8 @@ fn confirm_trash_apply(plan: &gdrive_core::TrashPlan) -> Result<()> {
     }
 }
 
-fn confirm_shared_declutter_apply(plan: &SharedDeclutterPlan) -> Result<()> {
+fn confirm_shared_declutter_apply(plan: &SharedDeclutterPlan, account: Option<&str>) -> Result<()> {
+    print_account_prefix(account);
     print!(
         "Remove {} backed-up shared-with-me item(s) from My Drive and leave {} unbacked/unresolved item(s)? [y/N]: ",
         plan.actionable_count,

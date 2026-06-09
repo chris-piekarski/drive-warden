@@ -237,7 +237,6 @@ pub fn resolve_account(
 pub struct AccountContext {
     pub name: String,
     pub dir: PathBuf,
-    pub accounts_root: PathBuf,
     pub toml: AccountToml,
 }
 
@@ -254,12 +253,7 @@ impl AccountContext {
             );
         }
         let toml = load_account_toml(&toml_path)?;
-        Ok(AccountContext {
-            name: name.to_string(),
-            dir,
-            accounts_root: accounts_root.to_path_buf(),
-            toml,
-        })
+        Ok(AccountContext { name: name.to_string(), dir, toml })
     }
 
     pub fn db_path(&self) -> PathBuf {

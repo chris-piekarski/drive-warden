@@ -4,7 +4,7 @@ This file helps coding agents get productive in `drive-warden` without rereading
 
 ## Project Summary
 
-`drive-warden` is a Rust CLI (**Drive Warden**) for syncing Google Drive metadata into a local SQLite intake ledger, running security briefings on duplicates/sharing/storage, backing up shared-with-me content, and safely applying guarded clearance revocations, recoverable segregation (trash), or cell transfers (moves). It syncs the SQLite DB to a private visible My Drive folder. The live backend supports `My Drive`; Shared Drives, permanent delete/empty-trash workflows, multi-account profiles, and keyring storage are deferred.
+`drive-warden` is a Rust CLI (**Drive Warden**) for syncing Google Drive metadata into a local SQLite intake ledger, running security briefings on duplicates/sharing/storage, backing up shared-with-me content, and safely applying guarded clearance revocations, recoverable segregation (trash), or cell transfers (moves). It syncs the SQLite DB to a private visible My Drive folder. The live backend supports `My Drive`; Shared Drives, permanent delete/empty-trash workflows, and keyring storage are deferred. Multiple accounts (e.g. personal + work) are first-class — see **Multi-Account And Identity Guard** below.
 
 The project is local-first and safety-first:
 
@@ -46,7 +46,7 @@ The binary crate is the only composition root. Adapter crates should not depend 
 
 Important core ports:
 
-- `DriveGateway`: auth, file listing, change listing, EXIF inspection, scope upgrades, folder/copy/permission writes, file export/download, authenticated URL fetch, and remove-from-My-Drive (shared declutter).
+- `DriveGateway`: auth, file listing, change listing, EXIF inspection, scope upgrades, folder/copy/permission writes, file export/download, authenticated URL fetch, remove-from-My-Drive (shared declutter), and live account identity lookup (`get_account_profile`, used by the multi-account guard). New trait methods should default to an erroring impl so the six existing implementors (live, mock, and test gateways) stay compiling.
 - `InventoryRepository`: committed snapshot state, sync run journaling, snapshot replacement, audit log, path cache inspection.
 - `ReportWriter`: Markdown output sink.
 
@@ -82,14 +82,25 @@ Important core ports:
 - `--retain-copy` creates private backup folders/files before removing targeted permissions and writes audit log entries for backup and permission actions.
 - `inspect exif` currently reads Drive `imageMediaMetadata`; byte-download EXIF fallback is intentionally not implemented.
 
+## Multi-Account And Identity Guard
+
+Code lives in `crates/drive-warden/src/account.rs` (model, resolution, adoption) and `crates/drive-warden/src/identity.rs` (guard). An account is a directory under the accounts root (default `data/accounts/<name>/`) holding its own `inventory.db`, tokens, session, and `reports/`; `credentials.json` stays shared at the accounts-root parent (`data/`).
+
+- **Selection precedence** (in `AppRuntime::from_cli`): explicit `--db` → `--account <name>` → `DRIVE_WARDEN_ACCOUNT` env → saved current pointer (`<root>/.current`) → legacy `data/inventory.db` when no accounts exist. `--db` is the legacy single-db escape hatch: it is **unguarded**, mutually exclusive with `--account`, and is why the existing functional tests (which pass `--db`) keep their pre-account behavior. `--config` only relocates the config file; it does **not** disable account mode (a config can set `[accounts] root`).
+- **Identity binding** (`account.toml` `[identity] state`): `unbound` (adopted with no email — trust-on-first-use), `declared` (email set via `--email`, binds the permissionId on first matching login), or `bound` (matches on the durable `account_id`/permissionId). A `bound` account with a missing permissionId is treated as a **Mismatch** (fail-closed), never a silent rebind.
+- **The guard is installed at the five low-level Drive-write functions**, not their callers, so no command can bypass it: `create_remote_db_release` (covers all `--apply` pre-mutation releases), `push_remote_db`, `pull_remote_db`, `rename_remote_db_folder`, `apply_remote_db_release_prune`. Each calls `identity::ensure_account_identity(.., Block)` **before** any Drive read/write. Read paths (`sync`, `report all/storage/summary/attention`, `db remote status`) call it in `Warn` mode; `auth login` rejects a mismatched identity. **Any new Drive-write path MUST call the Block guard before writing**, or it silently escapes wrong-account protection.
+- **Fail-closed**: in `Block` mode, if `get_account_profile` errors, the operation is refused (not allowed). Mismatch in `Block` aborts with `SECURITY ALERT`; in `Warn` it prints the alert and proceeds.
+- **Adoption** (`account add <name>`): moves an existing legacy `data/` install (or an explicit `--adopt-db`/`--adopt-tokens`/`--adopt-session`) into the account, then writes `account.toml` **last** as a completion sentinel (re-running resumes a partial move). It confirms interactively unless `--adopt`; `--empty` creates a fresh account and skips adoption. `--empty` conflicts with `--adopt`/`--adopt-db`; `--adopt-tokens`/`--adopt-session` require `--adopt-db`.
+
 ## CLI And Config Notes
 
 Default config path is `data/config.toml`; missing config is allowed. Useful knobs:
 
-- Global flags: `--backend google|mock`, `--config <path>`, `--db <path>`, `--format table|json`, `--no-interactive`.
-- Live env overrides: `DRIVE_WARDEN_CREDENTIALS`, `DRIVE_WARDEN_TOKENS`, `DRIVE_WARDEN_GOOGLE_SESSION`.
-- Default DB: `data/inventory.db`.
-- Default live credentials/session/token paths live beside the selected DB unless configured.
+- Global flags: `--backend google|mock`, `--config <path>`, `--db <path>`, `--account <name>`, `--format table|json`, `--no-interactive`.
+- Live env overrides: `DRIVE_WARDEN_CREDENTIALS`, `DRIVE_WARDEN_TOKENS`, `DRIVE_WARDEN_GOOGLE_SESSION`, `DRIVE_WARDEN_ACCOUNT` (select account), `DRIVE_WARDEN_ACCOUNTS_ROOT` (override accounts root).
+- Account management: `account add|list|use|current|show|remove`; `[accounts] root` in config (default `data/accounts`). See **Multi-Account And Identity Guard**.
+- Default DB: `data/inventory.db` in legacy mode; `data/accounts/<name>/inventory.db` in account mode.
+- Default live credentials/session/token paths live beside the selected DB unless configured; in account mode tokens/session are per-account and `credentials.json` is shared at the accounts-root parent.
 - Default report directory is configured `reports/<date>/` unless `-o <dir>` is passed.
 - Default stale threshold is 730 days.
 
@@ -125,6 +136,10 @@ cargo test -p drive-warden --test cli_find_functional
 cargo test -p drive-warden --test cli_polish_functional
 cargo test -p drive-warden --test cli_unshare_functional
 cargo test -p drive-warden --test cli_move_functional
+cargo test -p drive-warden --test cli_account_functional
+cargo test -p drive-warden --test cli_identity_guard_functional
+cargo test -p drive-warden --test cli_shared_backup_functional
+cargo test -p drive-warden --test cli_command_smoke_functional
 cargo test -p drive-warden --test acceptance_mock_end_to_end
 ```
 
@@ -134,6 +149,8 @@ Coverage target:
 make test-coverage
 ```
 
+`make test-coverage` runs `cargo llvm-cov --workspace --summary-only --fail-under-lines 85` — CI **fails if workspace line coverage drops below 85%**, so new code needs tests (functional tests through the compiled binary count toward coverage and are the cheapest way to cover `main.rs` handler/print branches, including `--format json`). The toolchain is pinned to `1.96.0` in `rust-toolchain.toml`, so local coverage matches CI.
+
 The Makefile enforces formatting and Clippy via `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
 
 ## Where To Add Tests
@@ -142,7 +159,7 @@ The Makefile enforces formatting and Clippy via `cargo fmt --all -- --check` and
 - End-to-end core orchestration with fake gateways/repos: `crates/gdrive-core/tests/sync_integration.rs`.
 - SQLite persistence, migrations, path cache: `crates/gdrive-db/tests/*` or `crates/gdrive-db/src/lib_tests.rs`.
 - Google/mock adapter mapping, scope/session behavior, fixture mutation: `crates/gdrive-drive/src/lib_tests.rs`.
-- CLI behavior through the compiled binary: `crates/drive-warden/tests/*`.
+- CLI behavior through the compiled binary: `crates/drive-warden/tests/*`. The `support` harness exposes `run_mock_command*` (legacy `--db` mode) and `run_account_command`/`run_account_in`/`*_with_fixture` (account mode — writes a temp `[accounts] root`, no `--db`). Account/identity/backup behavior lives in `cli_account_functional`, `cli_identity_guard_functional`, `cli_shared_backup_functional`, and `cli_command_smoke_functional`.
 - Markdown rendering/writer details: `crates/gdrive-report/src/lib_tests.rs`.
 - Fixture schema/existence checks: `crates/drive-warden/tests/fixtures_validate.rs`.
 
@@ -169,6 +186,8 @@ Functional and acceptance tests must use mock fixtures, not live Google.
 - Change move/write behavior: update `MovePlan`/`apply_move` in `gdrive-core`, live and mock `DriveGateway::move_file`, CLI guardrails, `moved_file_history` expectations, and post-apply sync tests.
 - Change trash/write behavior: update `TrashPlan`/`apply_trash` in `gdrive-core`, live and mock `DriveGateway::trash_file`, CLI guardrails, audit expectations, and post-apply sync tests.
 - Change remote DB sync behavior: update core manifest/privacy models, live and mock remote file operations, CLI `db remote` guardrails, Make targets, manifest verification tests, and docs.
+- Add a new live Drive-write path: route the actual write through (or alongside) the five guarded low-level functions, and call `identity::ensure_account_identity(.., Block)` before any Drive read/write — otherwise the write bypasses wrong-account protection. Add a mismatch test in `cli_identity_guard_functional` (a bound account vs the fixture identity must abort with `SECURITY ALERT`).
+- Change account/adoption behavior: update `account.rs` (model, resolution precedence, adoption) and `identity.rs` (binding state machine, guard); keep `command_needs_account` accurate for any new no-account command; cover with account-mode functional tests and keep workspace coverage ≥ 85%.
 
 ## Documentation Pointers
 
